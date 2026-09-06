@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+supabase
+upstash-redis
+httpx
+pydantic
