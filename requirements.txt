@@ -4,3 +4,4 @@ supabase
 upstash-redis
 httpx
 pydantic
+groq
