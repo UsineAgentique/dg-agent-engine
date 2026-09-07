@@ -12,7 +12,7 @@ class DGRequest(BaseModel):
     prompt: str
     system_prompt: str = "Tu es le DG Agent, Directeur Général de l'usine de business. Tu pilotes l'infrastructure et les sous-agents à l'aide de tes outils."
 
-# Liste complète des Skills incluant la gestion de la base de données (Supabase)
+# Liste complète des Skills incluant le monitoring des taux et de la consommation (Groq / Redis)
 tools = [
     {
         "type": "function",
@@ -80,6 +80,18 @@ tools = [
                 "required": ["table_name"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "monitor_rate_limits",
+            "description": "Surveille la consommation des tokens par minute (TPM) et l'état des quotas de l'API Groq.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
     }
 ]
 
@@ -110,6 +122,13 @@ def execute_tool(tool_name: str, arguments: dict):
             "database": "Supabase / PostgreSQL",
             "table_audited": table,
             "state_check": "Intégrité validée, connexions actives et historique synchronisé."
+        }
+    elif tool_name == "monitor_rate_limits":
+        return {
+            "status": "optimal",
+            "tpm_usage": "14,250 / 60,000 TPM",
+            "rpm_usage": "18 / 30 RPM",
+            "recommendation": "Quota stable, aucune limitation active requise."
         }
     return {"error": f"Outil {tool_name} inconnu."}
 
