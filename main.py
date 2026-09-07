@@ -1,237 +1,101 @@
 import os
-import json
-import httpx
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import FastAPI, Request
+from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
 from groq import Groq
+from supabase import create_client, Client
 
-app = FastAPI(title="DG Agent Engine - Autonomous Core")
+app = FastAPI()
 
-client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-
-# Configuration Supabase (compatibilité avec les deux noms de variables Render)
+# Initialisation des clients avec les variables d'environnement
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
-class DGRequest(BaseModel):
-    prompt: str
-    system_prompt: str = "Tu es le DG Agent, Directeur Général de l'usine de business. Tu pilotes l'infrastructure et les sous-agents à l'aide de tes outils."
+groq_api_key = os.environ.get("GROQ_API_KEY")
+groq_client = Groq(api_key=groq_api_key) if groq_api_key else None
 
-# Fonction utilitaire pour enregistrer les actions dans Supabase
-async def log_mission_to_supabase(action: str, department: str, status: str, details: str):
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        return {"status": "skipped", "reason": "Supabase credentials not configured in environment."}
-    
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json",
-        "Prefer": "return=minimal"
-    }
-    payload = {
-        "action_triggered": action,
-        "department": department,
-        "status": status,
-        "details": details
-    }
-    async with httpx.AsyncClient() as http_client:
+slack_token = os.environ.get("SLACK_BOT_TOKEN")
+slack_client = WebClient(token=slack_token) if slack_token else None
+
+
+def log_mission_to_supabase(prompt: str, response: str):
+    """Enregistre l'interaction dans la table missions_log de Supabase."""
+    if supabase:
         try:
-            response = await http_client.post(
-                f"{SUPABASE_URL}/rest/v1/missions_log",
-                json=payload,
-                headers=headers,
-                timeout=5.0
-            )
-            return {"status": "logged_to_supabase", "code": response.status_code}
+            supabase.table("missions_log").insert({
+                "prompt": prompt,
+                "response": response
+            }).execute()
         except Exception as e:
-            return {"status": "error", "message": str(e)}
+            print(f"Erreur Supabase: {e}")
 
-# Liste complète des Skills de l'usine
-tools = [
-    {
-        "type": "function",
-        "function": {
-            "name": "check_infrastructure_health",
-            "description": "Vérifie l'état de santé du serveur et des services connectés.",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "required": []
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "fetch_github_repository",
-            "description": "Simule ou interroge un dépôt GitHub pour récupérer des modèles de code ou des skills d'agents.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "repo_name": {
-                        "type": "string",
-                        "description": "Le nom du dépôt GitHub ou la source à analyser (ex: anthropic/claude-cookbook)."
-                    }
-                },
-                "required": ["repo_name"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "dispatch_sub_agent",
-            "description": "Route une sous-tâche vers un département ou un sous-agent spécialisé de l'usine.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "department": {
-                        "type": "string",
-                        "description": "Le pôle ou le département destinataire (ex: code, infrastructure, marketing)."
-                    },
-                    "task_description": {
-                        "type": "string",
-                        "description": "La mission précise assignée au sous-agent."
-                    }
-                },
-                "required": ["department", "task_description"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "verify_database_state",
-            "description": "Interroge la base de données Supabase pour valider l'intégrité des états et l'historique des missions.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "table_name": {
-                        "type": "string",
-                        "description": "Le nom de la table cible à auditer (ex: missions, agents_state)."
-                    }
-                },
-                "required": ["table_name"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "monitor_rate_limits",
-            "description": "Surveille la consommation des tokens par minute (TPM) et l'état des quotas de l'API Groq.",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "required": []
-            }
-        }
-    }
-]
 
-def execute_tool(tool_name: str, arguments: dict):
-    if tool_name == "check_infrastructure_health":
-        return {"status": "healthy", "service": "dg-agent-engine", "render": "online"}
-    elif tool_name == "fetch_github_repository":
-        repo = arguments.get("repo_name", "inconnu")
-        return {
-            "status": "success",
-            "repository": repo,
-            "content_summary": "Structure de l'agent récupérée avec succès : pattern de function calling et boucle d'exécution compatibles avec l'API Groq."
-        }
-    elif tool_name == "dispatch_sub_agent":
-        dept = arguments.get("department", "général")
-        task = arguments.get("task_description", "aucune")
-        return {
-            "status": "success",
-            "target_department": dept,
-            "delegated_task": task,
-            "execution_result": f"Sous-agent du département '{dept}' activé avec succès et rapport transmis au DG."
-        }
-    elif tool_name == "verify_database_state":
-        table = arguments.get("table_name", "général")
-        return {
-            "status": "success",
-            "database": "Supabase / PostgreSQL",
-            "table_audited": table,
-            "state_check": "Intégrité validée, connexions actives et historique synchronisé."
-        }
-    elif tool_name == "monitor_rate_limits":
-        return {
-            "status": "optimal",
-            "tpm_usage": "14,250 / 60,000 TPM",
-            "rpm_usage": "18 / 30 RPM",
-            "recommendation": "Quota stable, aucune limitation active requise."
-        }
-    return {"error": f"Outil {tool_name} inconnu."}
-
-@app.post("/run-dg")
-async def run_dg(request: DGRequest):
+def run_dg_engine(user_text: str) -> str:
+    """Interroge le modèle Groq pour la prise de décision du DG."""
+    if not groq_client:
+        return "Erreur : Client Groq non configuré."
+    
     try:
-        messages = [
-            {"role": "system", "content": request.system_prompt},
-            {"role": "user", "content": request.prompt}
-        ]
-
-        response = client.chat.completions.create(
-            model="openai/gpt-oss-120b",
-            messages=messages,
-            tools=tools,
-            tool_choice="auto"
+        chat_completion = groq_client.chat.completions.create(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Tu es le Directeur Général (DG) d'une structure d'agents autonomes. "
+                        "Ton rôle est d'analyser les directives reçues, d'arbitrer avec recul, "
+                        "et de formuler des réponses claires et structurées."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": user_text
+                }
+            ],
+            model="llama-3.3-70b-versatile",
+            temperature=0.7,
         )
-
-        response_message = response.choices[0].message
-
-        if response_message.tool_calls:
-            tool_call = response_message.tool_calls[0]
-            tool_name = tool_call.function.name
-            
-            try:
-                tool_args = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
-            except Exception:
-                tool_args = {}
-
-            tool_result = execute_tool(tool_name, tool_args)
-
-            # Journalisation automatique de la mission dans Supabase
-            db_log_result = await log_mission_to_supabase(
-                action=tool_name,
-                department=tool_args.get("department", "infrastructure"),
-                status="success",
-                details=str(tool_result)
-            )
-
-            messages.append(response_message)
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "name": tool_name,
-                "content": str(tool_result)
-            })
-
-            second_response = client.chat.completions.create(
-                model="openai/gpt-oss-120b",
-                messages=messages
-            )
-
-            return {
-                "status": "success",
-                "action_triggered": tool_name,
-                "tool_output": tool_result,
-                "supabase_sync": db_log_result,
-                "response": second_response.choices[0].message.content,
-                "model_used": "openai/gpt-oss-120b"
-            }
-
-        return {
-            "status": "success",
-            "response": response_message.content,
-            "model_used": "openai/gpt-oss-120b"
-        }
-
+        response_text = chat_completion.choices[0].message.content
+        
+        # Journalisation automatique de la mission
+        log_mission_to_supabase(user_text, response_text)
+        
+        return response_text
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return f"Erreur du moteur DG : {str(e)}"
+
 
 @app.get("/")
 def read_root():
-    return {"status": "live", "engine": "DG Agent Autonomous Core"}
+    return {"status": "DG Agent Engine is operational"}
+
+
+@app.post("/slack/events")
+async def slack_events(request: Request):
+    """Endpoint webhook pour intercepter les événements Slack."""
+    data = await request.json()
+    
+    # 1. Validation de l'URL par Slack (challenge de configuration initial)
+    if data.get("type") == "url_verification":
+        return {"challenge": data.get("challenge")}
+    
+    # 2. Traitement lorsqu'un utilisateur mentionne le bot
+    event = data.get("event", {})
+    if event.get("type") == "app_mention" and not event.get("bot_id"):
+        channel_id = event.get("channel")
+        user_text = event.get("text")
+        
+        if slack_client and user_text:
+            try:
+                # Exécution de la logique métier du DG (Groq + Supabase)
+                response_text = run_dg_engine(user_text)
+                
+                # Le DG répond directement sur le canal Slack
+                slack_client.chat_postMessage(
+                    channel=channel_id,
+                    text=response_text
+                )
+            except SlackApiError as e:
+                print(f"Erreur Slack API : {e.response['error']}")
+                
+    return {"status": "ok"}
