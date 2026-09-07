@@ -9,9 +9,9 @@ app = FastAPI(title="DG Agent Engine - Autonomous Core")
 
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# Configuration Supabase (récupérée depuis l'environnement Render)
+# Configuration Supabase (compatibilité avec les deux noms de variables Render)
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
 
 class DGRequest(BaseModel):
     prompt: str
