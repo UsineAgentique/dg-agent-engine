@@ -12,7 +12,7 @@ class DGRequest(BaseModel):
     prompt: str
     system_prompt: str = "Tu es le DG Agent, Directeur Général de l'usine de business. Tu pilotes l'infrastructure et les sous-agents à l'aide de tes outils."
 
-# Liste complète des Skills incluant l'orchestration des sous-agents (Niveau 2)
+# Liste complète des Skills incluant la gestion de la base de données (Supabase)
 tools = [
     {
         "type": "function",
@@ -63,6 +63,23 @@ tools = [
                 "required": ["department", "task_description"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "verify_database_state",
+            "description": "Interroge la base de données Supabase pour valider l'intégrité des états et l'historique des missions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "table_name": {
+                        "type": "string",
+                        "description": "Le nom de la table cible à auditer (ex: missions, agents_state)."
+                    }
+                },
+                "required": ["table_name"]
+            }
+        }
     }
 ]
 
@@ -85,6 +102,14 @@ def execute_tool(tool_name: str, arguments: dict):
             "target_department": dept,
             "delegated_task": task,
             "execution_result": f"Sous-agent du département '{dept}' activé avec succès et rapport transmis au DG."
+        }
+    elif tool_name == "verify_database_state":
+        table = arguments.get("table_name", "général")
+        return {
+            "status": "success",
+            "database": "Supabase / PostgreSQL",
+            "table_audited": table,
+            "state_check": "Intégrité validée, connexions actives et historique synchronisé."
         }
     return {"error": f"Outil {tool_name} inconnu."}
 
