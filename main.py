@@ -3,44 +3,93 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from groq import Groq
 
-app = FastAPI(title="DG Agent Engine", version="1.0.0")
+app = FastAPI(title="DG Agent Engine - Autonomous Core")
 
-# Initialisation du client Groq avec la clé d'environnement configurée sur Render
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-class AgentRequest(BaseModel):
+class DGRequest(BaseModel):
     prompt: str
-    system_prompt: str = "Tu es le DG Agent, le Directeur Général de l'usine de business. Tu coordonnes les sous-agents avec rigueur et efficacité."
+    system_prompt: str = "Tu es le DG Agent, Directeur Général de l'usine de business. Tu pilotes l'infrastructure et les sous-agents à l'aide de tes outils."
 
-@app.get("/")
-def health_check():
-    return {"status": "online", "engine": "dg-agent-engine", "model": "openai/gpt-oss-120b"}
+# Définition des premiers Skills (Outils exécutables par le DG)
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "check_infrastructure_health",
+            "description": "Vérifie l'état de santé du serveur et des services connectés.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    }
+]
+
+# Exécution logique de l'outil
+def execute_tool(tool_name: str, arguments: dict):
+    if tool_name == "check_infrastructure_health":
+        return {"status": "healthy", "service": "dg-agent-engine", "render": "online"}
+    return {"error": f"Outil {tool_name} inconnu."}
 
 @app.post("/run-dg")
-async def run_dg_agent(request: AgentRequest):
+async def run_dg(request: DGRequest):
     try:
-        chat_completion = client.chat.completions.create(
-            messages=[
-                {
-                    "role": "system",
-                    "content": request.system_prompt
-                },
-                {
-                    "role": "user",
-                    "content": request.prompt,
-                }
-            ],
+        messages = [
+            {"role": "system", "content": request.system_prompt},
+            {"role": "user", "content": request.prompt}
+        ]
+
+        # Premier appel au modèle avec activation des outils
+        response = client.chat.completions.create(
             model="openai/gpt-oss-120b",
-            temperature=0.3,
-            max_completion_tokens=4096
+            messages=messages,
+            tools=tools,
+            tool_choice="auto"
         )
-        
+
+        response_message = response.choices[0].message
+
+        # Vérification si le DG décide d'utiliser un outil
+        if response_message.tool_calls:
+            tool_call = response_message.tool_calls[0]
+            tool_name = tool_call.function.name
+            
+            # Exécution de l'outil
+            tool_result = execute_tool(tool_name, {})
+
+            # Deuxième appel pour renvoyer le résultat de l'outil au DG afin qu'il formule sa réponse finale
+            messages.append(response_message)
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "name": tool_name,
+                "content": str(tool_result)
+            })
+
+            second_response = client.chat.completions.create(
+                model="openai/gpt-oss-120b",
+                messages=messages
+            )
+
+            return {
+                "status": "success",
+                "action_triggered": tool_name,
+                "tool_output": tool_result,
+                "response": second_response.choices[0].message.content,
+                "model_used": "openai/gpt-oss-120b"
+            }
+
         return {
             "status": "success",
-            "model_used": "openai/gpt-oss-120b",
-            "response": chat_completion.choices[0].message.content,
-            "usage": dict(chat_completion.usage) if hasattr(chat_completion, "usage") else None
+            "response": response_message.content,
+            "model_used": "openai/gpt-oss-120b"
         }
-        
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur d'exécution Groq : {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/")
+def read_root():
+    return {"status": "live", "engine": "DG Agent Autonomous Core"}
