@@ -12,7 +12,7 @@ class DGRequest(BaseModel):
     prompt: str
     system_prompt: str = "Tu es le DG Agent, Directeur Général de l'usine de business. Tu pilotes l'infrastructure et les sous-agents à l'aide de tes outils."
 
-# Liste complète des Skills (Outils exécutables par le DG)
+# Liste complète des Skills incluant l'orchestration des sous-agents (Niveau 2)
 tools = [
     {
         "type": "function",
@@ -42,6 +42,27 @@ tools = [
                 "required": ["repo_name"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "dispatch_sub_agent",
+            "description": "Route une sous-tâche vers un département ou un sous-agent spécialisé de l'usine.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "department": {
+                        "type": "string",
+                        "description": "Le pôle ou le département destinataire (ex: code, infrastructure, marketing)."
+                    },
+                    "task_description": {
+                        "type": "string",
+                        "description": "La mission précise assignée au sous-agent."
+                    }
+                },
+                "required": ["department", "task_description"]
+            }
+        }
     }
 ]
 
@@ -55,6 +76,15 @@ def execute_tool(tool_name: str, arguments: dict):
             "status": "success",
             "repository": repo,
             "content_summary": "Structure de l'agent récupérée avec succès : pattern de function calling et boucle d'exécution compatibles avec l'API Groq."
+        }
+    elif tool_name == "dispatch_sub_agent":
+        dept = arguments.get("department", "général")
+        task = arguments.get("task_description", "aucune")
+        return {
+            "status": "success",
+            "target_department": dept,
+            "delegated_task": task,
+            "execution_result": f"Sous-agent du département '{dept}' activé avec succès et rapport transmis au DG."
         }
     return {"error": f"Outil {tool_name} inconnu."}
 
