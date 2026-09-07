@@ -1,7 +1,5 @@
 fastapi
 uvicorn
-supabase
-upstash-redis
-httpx
-pydantic
+slack-sdk
 groq
+supabase
