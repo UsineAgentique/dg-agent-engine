@@ -1,4 +1,5 @@
 import os
+import json
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from groq import Groq
@@ -11,7 +12,7 @@ class DGRequest(BaseModel):
     prompt: str
     system_prompt: str = "Tu es le DG Agent, Directeur Général de l'usine de business. Tu pilotes l'infrastructure et les sous-agents à l'aide de tes outils."
 
-# Définition des premiers Skills (Outils exécutables par le DG)
+# Liste complète des Skills (Outils exécutables par le DG)
 tools = [
     {
         "type": "function",
@@ -24,13 +25,37 @@ tools = [
                 "required": []
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_github_repository",
+            "description": "Simule ou interroge un dépôt GitHub pour récupérer des modèles de code ou des skills d'agents.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo_name": {
+                        "type": "string",
+                        "description": "Le nom du dépôt GitHub ou la source à analyser (ex: anthropic/claude-cookbook)."
+                    }
+                },
+                "required": ["repo_name"]
+            }
+        }
     }
 ]
 
-# Exécution logique de l'outil
+# Exécution logique des outils
 def execute_tool(tool_name: str, arguments: dict):
     if tool_name == "check_infrastructure_health":
         return {"status": "healthy", "service": "dg-agent-engine", "render": "online"}
+    elif tool_name == "fetch_github_repository":
+        repo = arguments.get("repo_name", "inconnu")
+        return {
+            "status": "success",
+            "repository": repo,
+            "content_summary": "Structure de l'agent récupérée avec succès : pattern de function calling et boucle d'exécution compatibles avec l'API Groq."
+        }
     return {"error": f"Outil {tool_name} inconnu."}
 
 @app.post("/run-dg")
@@ -56,8 +81,14 @@ async def run_dg(request: DGRequest):
             tool_call = response_message.tool_calls[0]
             tool_name = tool_call.function.name
             
-            # Exécution de l'outil
-            tool_result = execute_tool(tool_name, {})
+            # Extraction sécurisée des arguments JSON transmis par le modèle
+            try:
+                tool_args = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
+            except Exception:
+                tool_args = {}
+
+            # Exécution de l'outil avec ses arguments
+            tool_result = execute_tool(tool_name, tool_args)
 
             # Deuxième appel pour renvoyer le résultat de l'outil au DG afin qu'il formule sa réponse finale
             messages.append(response_message)
