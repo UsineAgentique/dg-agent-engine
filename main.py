@@ -2,6 +2,7 @@ import os
 from fastapi import FastAPI, Request
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
+from slack_sdk.socket_mode.async_handler import AsyncSlackRequestHandler # Optionnel ou gestion manuelle propre
 from groq import Groq
 from supabase import create_client, Client
 
@@ -18,7 +19,6 @@ groq_client = Groq(api_key=groq_api_key) if groq_api_key else None
 slack_token = os.environ.get("SLACK_BOT_TOKEN")
 slack_client = WebClient(token=slack_token) if slack_token else None
 
-
 def log_mission_to_supabase(prompt: str, response: str):
     """Enregistre l'interaction dans la table missions_log de Supabase."""
     if supabase:
@@ -29,7 +29,6 @@ def log_mission_to_supabase(prompt: str, response: str):
             }).execute()
         except Exception as e:
             print(f"Erreur Supabase: {e}")
-
 
 def run_dg_engine(user_text: str) -> str:
     """Interroge le modèle Groq pour la prise de décision du DG."""
@@ -64,28 +63,29 @@ def run_dg_engine(user_text: str) -> str:
     except Exception as e:
         return f"Erreur du moteur DG : {str(e)}"
 
-
 @app.get("/")
 def read_root():
     return {"status": "DG Agent Engine is operational"}
 
-
 @app.post("/slack/events")
 async def slack_events(request: Request):
     """Endpoint webhook pour intercepter les événements Slack."""
-    data = await request.json()
-    
+    try:
+        data = await request.json()
+    except Exception:
+        return {"status": "error", "message": "Invalid JSON"}
+
     # 1. Validation de l'URL par Slack (challenge de configuration initial)
     if data.get("type") == "url_verification":
         return {"challenge": data.get("challenge")}
-    
+
     # 2. Traitement lorsqu'un utilisateur mentionne le bot
     event = data.get("event", {})
     if event.get("type") == "app_mention" and not event.get("bot_id"):
         channel_id = event.get("channel")
         user_text = event.get("text")
         
-        if slack_client and user_text:
+        if slack_client and user_text and channel_id:
             try:
                 # Exécution de la logique métier du DG (Groq + Supabase)
                 response_text = run_dg_engine(user_text)
