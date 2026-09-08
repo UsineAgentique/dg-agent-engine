@@ -2,7 +2,6 @@ import os
 from fastapi import FastAPI, Request
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
-from slack_sdk.socket_mode.async_handler import AsyncSlackRequestHandler # Optionnel ou gestion manuelle propre
 from groq import Groq
 from supabase import create_client, Client
 
