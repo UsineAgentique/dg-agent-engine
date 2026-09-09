@@ -1,7 +1,7 @@
 import os
 import threading
 import time
-import requests
+import urllib.request
 from fastapi import FastAPI, Request, BackgroundTasks
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
@@ -10,7 +10,6 @@ from supabase import create_client, Client
 
 app = FastAPI()
 
-# Initialisation des clients avec les variables d'environnement
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
@@ -22,11 +21,11 @@ slack_token = os.environ.get("SLACK_BOT_TOKEN")
 slack_client = WebClient(token=slack_token) if slack_token else None
 
 def keep_alive():
-    """Effectue un auto-ping toutes les 10 minutes pour empêcher Render de s'endormir."""
+    """Effectue un auto-ping via urllib (natif Python) toutes les 10 minutes."""
     app_url = os.environ.get("RENDER_EXTERNAL_URL", "https://dg-agent-engine.onrender.com")
     while True:
         try:
-            requests.get(app_url, timeout=10)
+            urllib.request.urlopen(app_url, timeout=10)
         except Exception:
             pass
         time.sleep(600)
