@@ -50,7 +50,7 @@ def run_dg_engine(user_text: str) -> str:
                     "content": user_text
                 }
             ],
-            model="llama-3.3-70b-versatile",
+            model="llama-3.1-70b-versatile",
             temperature=0.7,
         )
         response_text = chat_completion.choices[0].message.content
