@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, BackgroundTasks
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from groq import Groq
@@ -7,7 +7,6 @@ from supabase import create_client, Client
 
 app = FastAPI()
 
-# Initialisation des clients avec les variables d'environnement
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
@@ -19,7 +18,6 @@ slack_token = os.environ.get("SLACK_BOT_TOKEN")
 slack_client = WebClient(token=slack_token) if slack_token else None
 
 def log_mission_to_supabase(prompt: str, response: str):
-    """Enregistre l'interaction dans la table missions_log de Supabase."""
     if supabase:
         try:
             supabase.table("missions_log").insert({
@@ -29,10 +27,10 @@ def log_mission_to_supabase(prompt: str, response: str):
         except Exception as e:
             print(f"Erreur Supabase: {e}")
 
-def run_dg_engine(user_text: str) -> str:
-    """Interroge le modèle Groq pour la prise de décision du DG."""
-    if not groq_client:
-        return "Erreur : Client Groq non configuré."
+def process_dg_mission(channel_id: str, user_text: str):
+    """Exécute l'inférence Groq, journalise et envoie la réponse en arrière-plan."""
+    if not groq_client or not slack_client:
+        return
     
     try:
         chat_completion = groq_client.chat.completions.create(
@@ -50,51 +48,41 @@ def run_dg_engine(user_text: str) -> str:
                     "content": user_text
                 }
             ],
-            model="llama-3.1-70b-versatile",
+            model="openai/gpt-oss-120b",
             temperature=0.7,
         )
         response_text = chat_completion.choices[0].message.content
         
-        # Journalisation automatique de la mission
         log_mission_to_supabase(user_text, response_text)
         
-        return response_text
+        slack_client.chat_postMessage(
+            channel=channel_id,
+            text=response_text
+        )
     except Exception as e:
-        return f"Erreur du moteur DG : {str(e)}"
+        print(f"Erreur d'exécution du moteur DG : {str(e)}")
 
 @app.get("/")
 def read_root():
     return {"status": "DG Agent Engine is operational"}
 
 @app.post("/slack/events")
-async def slack_events(request: Request):
-    """Endpoint webhook pour intercepter les événements Slack."""
+async def slack_events(request: Request, background_tasks: BackgroundTasks):
     try:
         data = await request.json()
     except Exception:
         return {"status": "error", "message": "Invalid JSON"}
 
-    # 1. Validation de l'URL par Slack (challenge de configuration initial)
     if data.get("type") == "url_verification":
         return {"challenge": data.get("challenge")}
 
-    # 2. Traitement lorsqu'un utilisateur mentionne le bot
     event = data.get("event", {})
     if event.get("type") == "app_mention" and not event.get("bot_id"):
         channel_id = event.get("channel")
         user_text = event.get("text")
         
-        if slack_client and user_text and channel_id:
-            try:
-                # Exécution de la logique métier du DG (Groq + Supabase)
-                response_text = run_dg_engine(user_text)
-                
-                # Le DG répond directement sur le canal Slack
-                slack_client.chat_postMessage(
-                    channel=channel_id,
-                    text=response_text
-                )
-            except SlackApiError as e:
-                print(f"Erreur Slack API : {e.response['error']}")
-                
+        if user_text and channel_id:
+            # Répond instantanément à Slack (HTTP 200 immédiat) et délègue le calcul
+            background_tasks.add_task(process_dg_mission, channel_id, user_text)
+            
     return {"status": "ok"}
