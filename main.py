@@ -1,4 +1,7 @@
 import os
+import threading
+import time
+import requests
 from fastapi import FastAPI, Request, BackgroundTasks
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
@@ -7,6 +10,7 @@ from supabase import create_client, Client
 
 app = FastAPI()
 
+# Initialisation des clients avec les variables d'environnement
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
@@ -16,6 +20,21 @@ groq_client = Groq(api_key=groq_api_key) if groq_api_key else None
 
 slack_token = os.environ.get("SLACK_BOT_TOKEN")
 slack_client = WebClient(token=slack_token) if slack_token else None
+
+def keep_alive():
+    """Effectue un auto-ping toutes les 10 minutes pour empêcher Render de s'endormir."""
+    app_url = os.environ.get("RENDER_EXTERNAL_URL", "https://dg-agent-engine.onrender.com")
+    while True:
+        try:
+            requests.get(app_url, timeout=10)
+        except Exception:
+            pass
+        time.sleep(600)
+
+@app.on_event("startup")
+def startup_event():
+    thread = threading.Thread(target=keep_alive, daemon=True)
+    thread.start()
 
 def log_mission_to_supabase(prompt: str, response: str):
     if supabase:
@@ -28,7 +47,6 @@ def log_mission_to_supabase(prompt: str, response: str):
             print(f"Erreur Supabase: {e}")
 
 def process_dg_mission(channel_id: str, user_text: str):
-    """Exécute l'inférence Groq, journalise et envoie la réponse en arrière-plan."""
     if not groq_client or not slack_client:
         return
     
@@ -82,7 +100,6 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
         user_text = event.get("text")
         
         if user_text and channel_id:
-            # Répond instantanément à Slack (HTTP 200 immédiat) et délègue le calcul
             background_tasks.add_task(process_dg_mission, channel_id, user_text)
             
     return {"status": "ok"}
