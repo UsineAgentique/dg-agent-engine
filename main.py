@@ -148,8 +148,7 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
     ]
 
     try:
-        # Utilisation de llama-3.1-8b-instant, garanti 100% actif et accessible sur toutes les clés Groq
-        model_name = "llama-3.1-8b-instant"
+        model_name = "openai/gpt-oss-120b"
 
         completion = groq_client.chat.completions.create(
             model=model_name,
@@ -160,89 +159,4 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
 
         tool_call_data = None
         try:
-            cleaned_json = re.sub(r"^```json\s*|\s*```$", "", response_text, flags=re.IGNORECASE).strip()
-            parsed = json.loads(cleaned_json)
-            if isinstance(parsed, dict) and "tool" in parsed and "arguments" in parsed:
-                tool_call_data = parsed
-        except:
-            pass
-
-        if tool_call_data:
-            tool_name = tool_call_data.get("tool")
-            tool_args = tool_call_data.get("arguments", {})
-            
-            if tool_name in AVAILABLE_TOOLS:
-                if "project_name" in tool_args and not tool_args["project_name"]:
-                    tool_args["project_name"] = project_name
-
-                tool_output = AVAILABLE_TOOLS[tool_name](**tool_args)
-
-                messages.append({"role": "assistant", "content": response_text})
-                messages.append({"role": "user", "content": f"Résultat de l'outil {tool_name} : {tool_output}\n\nRédige maintenant ta réponse finale pour le CEO."})
-
-                final_completion = groq_client.chat.completions.create(
-                    model=model_name,
-                    messages=messages,
-                    temperature=0.7,
-                )
-                response_text = final_completion.choices[0].message.content.strip()
-
-        if not response_text:
-            response_text = "Mission exécutée."
-
-        if supabase:
-            try:
-                supabase.table("missions_log").insert({
-                    "project": project_name,
-                    "prompt": user_text,
-                    "response": response_text
-                }).execute()
-            except Exception as e:
-                print(f"Erreur Supabase log: {e}")
-
-        slack_client.chat_postMessage(
-            channel=channel_id,
-            text=response_text
-        )
-    except Exception as e:
-        print(f"Erreur d'exécution du moteur DG : {str(e)}")
-        try:
-            slack_client.chat_postMessage(
-                channel=channel_id,
-                text=f"⚠️ Incident technique : {str(e)}"
-            )
-        except:
-            pass
-
-@app.get("/")
-def read_root():
-    return {"status": "DG Multi-Tool Engine is operational"}
-
-@app.post("/slack/events")
-async def slack_events(request: Request, background_tasks: BackgroundTasks):
-    try:
-        data = await request.json()
-    except Exception:
-        return {"status": "error", "message": "Invalid JSON"}
-
-    if data.get("type") == "url_verification":
-        return {"challenge": data.get("challenge")}
-
-    event = data.get("event", {})
-    if event.get("bot_id") or event.get("subtype") == "bot_message":
-        return {"status": "ok"}
-
-    event_type = event.get("type")
-    channel_type = event.get("channel_type")
-    
-    is_mention = (event_type == "app_mention")
-    is_dm = (event_type == "message" and channel_type == "im")
-
-    if is_mention or is_dm:
-        channel_id = event.get("channel")
-        user_text = event.get("text")
-        
-        if user_text and channel_id:
-            background_tasks.add_task(process_dg_mission, channel_id, channel_type, user_text)
-            
-    return {"status": "ok"}
+            cleaned_json = re.sub(r"^```json\s*|\s*
