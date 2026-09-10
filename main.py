@@ -1,9 +1,9 @@
 import os
 import json
-import re
 import urllib.request
 import threading
 import time
+import re
 from fastapi import FastAPI, Request, BackgroundTasks
 from slack_sdk import WebClient
 from groq import Groq
@@ -35,48 +35,20 @@ def startup_event():
     thread = threading.Thread(target=keep_alive, daemon=True)
     thread.start()
 
-def get_or_create_project(channel_id: str) -> str:
-    project_name = f"Canal {channel_id}"
-    if supabase:
-        try:
-            res = supabase.table("projects").select("project_name").eq("channel_id", channel_id).execute()
-            if res.data and len(res.data) > 0:
-                return res.data[0]["project_name"]
-        except Exception as e:
-            print(f"Erreur lecture projet Supabase: {e}")
-
-    if slack_client:
-        try:
-            info = slack_client.conversations_info(channel=channel_id)
-            channel_name = info.get("channel", {}).get("name")
-            if channel_name:
-                project_name = f"Projet: {channel_name}"
-        except Exception as e:
-            print(f"Erreur lecture Slack: {e}")
-
-    if supabase:
-        try:
-            supabase.table("projects").upsert({
-                "channel_id": channel_id,
-                "project_name": project_name
-            }, on_conflict="channel_id").execute()
-        except Exception as e:
-            print(f"Erreur écriture projet Supabase: {e}")
-
-    return project_name
-
-
-# --- OUTILS ---
-def query_missions_history(project_name: str) -> str:
+def get_enterprise_context() -> str:
     if not supabase:
-        return json.dumps({"error": "Base de données non disponible."})
+        return "Aucun projet enregistré (Base de données indisponible)."
     try:
-        res = supabase.table("missions_log").select("prompt, response, created_at").eq("project", project_name).order("created_at", desc=True).limit(5).execute()
-        return json.dumps(res.data, ensure_ascii=False)
+        res = supabase.table("projects").select("project_name, channel_id").execute()
+        if res.data:
+            projects = [f"- {p['project_name']} (Canal: {p['channel_id']})" for p in res.data]
+            return "Portfolio actif des projets de l'entreprise :\n" + "\n".join(projects)
+        return "Aucun projet actif enregistré pour le moment."
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        return f"Erreur récupération projets: {str(e)}"
 
 def search_web(query: str) -> str:
+    """Recherche des informations actualisées, scores, faits ou actualités sur le web."""
     tavily_key = os.environ.get("TAVILY_API_KEY")
     if not tavily_key:
         return json.dumps({"error": "TAVILY_API_KEY non configurée."})
@@ -99,47 +71,110 @@ def search_web(query: str) -> str:
     except Exception as e:
         return json.dumps({"error": str(e)})
 
-def record_project_decision(project_name: str, decision_summary: str) -> str:
+def query_missions_history(project_name: str = "") -> str:
+    """Consulte l'historique interne des discussions et tâches des projets de l'entreprise."""
+    if not supabase:
+        return json.dumps({"error": "Base de données non disponible."})
+    try:
+        query_builder = supabase.table("missions_log").select("project, prompt, response, created_at")
+        if project_name and project_name.lower() != "global":
+            query_builder = query_builder.eq("project", project_name)
+        res = query_builder.order("created_at", desc=True).limit(5).execute()
+        return json.dumps(res.data, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+def record_enterprise_decision(decision_summary: str, project_name: str = "Direction Générale - Entreprise") -> str:
+    """Enregistre officiellement une décision stratégique ou une note de gouvernance."""
     if not supabase:
         return json.dumps({"error": "Base de données non disponible."})
     try:
         supabase.table("missions_log").insert({
             "project": project_name,
-            "prompt": "[DÉCISION / NOTE STRATÉGIQUE DG]",
+            "prompt": "[DÉCISION STRATÉGIQUE DG]",
             "response": decision_summary
         }).execute()
-        return json.dumps({"status": "success", "message": "Décision enregistrée."})
+        return json.dumps({"status": "success", "message": "Décision enregistrée avec succès."})
     except Exception as e:
         return json.dumps({"error": str(e)})
 
 AVAILABLE_TOOLS = {
-    "query_missions_history": query_missions_history,
     "search_web": search_web,
-    "record_project_decision": record_project_decision
+    "query_missions_history": query_missions_history,
+    "record_enterprise_decision": record_enterprise_decision
 }
+
+GROQ_TOOLS_SCHEMA = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_web",
+            "description": "OBLIGATOIRE pour toute question sur l'actualité, les scores, les matchs, les faits réels ou les données changeantes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "La requête de recherche claire et optimisée."
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_missions_history",
+            "description": "Consulte l'historique interne des projets de l'entreprise.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_name": {
+                        "type": "string",
+                        "description": "Nom spécifique du projet ou laisser vide pour l'ensemble."
+                    }
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "record_enterprise_decision",
+            "description": "Enregistre une décision stratégique ou une note de gouvernance officielle.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "decision_summary": {
+                        "type": "string",
+                        "description": "Le résumé clair et concis de la décision prise."
+                    },
+                    "project_name": {
+                        "type": "string",
+                        "description": "Le projet concerné par la décision."
+                    }
+                },
+                "required": ["decision_summary"]
+            }
+        }
+    }
+]
 
 def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
     if not groq_client or not slack_client:
         return
     
-    if channel_type == "im":
-        project_name = "Global / Direction Générale"
-    else:
-        project_name = get_or_create_project(channel_id)
+    enterprise_portfolio = get_enterprise_context()
 
     system_prompt = (
-        f"Tu es le Directeur Général (DG) pour le contexte : '{project_name}'. "
-        "Tu disposes d'outils que tu peux appeler si tu en as besoin.\n"
-        "Pour utiliser un outil, réponds STRICTEMENT et UNIQUEMENT au format JSON, sans aucun texte avant ou après :\n"
-        "{\n"
-        '  "tool": "nom_de_l_outil",\n'
-        '  "arguments": { "param_1": "valeur_1" }\n'
-        "}\n\n"
-        "Outils disponibles :\n"
-        "1. search_web(query: string) -> OBLIGATOIRE pour toute question sur l'actualité, les scores, les matchs, ou les infos en temps réel.\n"
-        "2. query_missions_history(project_name: string) -> Pour consulter l'historique interne.\n"
-        "3. record_project_decision(project_name: string, decision_summary: string) -> Pour enregistrer une décision stratégique.\n\n"
-        "Si tu réponds en texte normal, réponds directement au CEO sans JSON."
+        "Tu es le Directeur Général (DG) de l'entreprise. Tu pilotes l'ensemble des projets, "
+        "coordonnes les activités et garantis une rigueur opérationnelle absolue.\n\n"
+        f"CONTEXTE DE L'ENTREPRISE :\n{enterprise_portfolio}\n\n"
+        "DOCTRINE DE GOUVERNANCE ET ZÉRO TOLÉRANCE AUX HALLUCINATIONS :\n"
+        "1. **Vérification factuelle stricte** : Tu n'as pas le droit d'inventer des faits, des scores, des transferts ou des données externes. Si une information dépend du monde réel ou de l'actualité, tu **DOIS** appeler l'outil `search_web`.\n"
+        "2. **Transparence d'exécution** : Si après une recherche les données sont introuvables, déclare-le explicitement au lieu de deviner.\n"
+        "3. **Posture exécutive** : Ton ton est direct, professionnel, analytique et irréprochable.\n"
     )
 
     messages = [
@@ -150,77 +185,103 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
     try:
         model_name = "openai/gpt-oss-120b"
 
+        # 1. Premier appel avec Native Tool Calling
         completion = groq_client.chat.completions.create(
             model=model_name,
             messages=messages,
-            temperature=0.3, # Température plus basse pour éviter les délires/hallucinations
+            tools=GROQ_TOOLS_SCHEMA,
+            tool_choice="auto",
+            temperature=0.1
         )
-        response_text = completion.choices[0].message.content.strip()
+        
+        response_message = completion.choices[0].message
+        messages.append(response_message)
 
-        # Extraction robuste du JSON peu importe le texte autour
-        tool_call_data = None
-        try:
-            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-            if json_match:
-                parsed = json.loads(json_match.group(0))
-                if isinstance(parsed, dict) and "tool" in parsed and "arguments" in parsed:
-                    tool_call_data = parsed
-        except Exception as e:
-            print(f"Erreur parsing JSON outil : {e}")
+        # Exécution des outils si demandés par le modèle
+        if response_message.tool_calls:
+            for tool_call in response_message.tool_calls:
+                tool_name = tool_call.function.name
+                tool_args = json.loads(tool_call.function.arguments or "{}")
 
-        if tool_call_data:
-            tool_name = tool_call_data.get("tool")
-            tool_args = tool_call_data.get("arguments", {})
-            
-            if tool_name in AVAILABLE_TOOLS:
-                if "project_name" in tool_args and not tool_args["project_name"]:
-                    tool_args["project_name"] = project_name
+                if tool_name in AVAILABLE_TOOLS:
+                    tool_output = AVAILABLE_TOOLS[tool_name](**tool_args)
 
-                tool_output = AVAILABLE_TOOLS[tool_name](**tool_args)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "name": tool_name,
+                        "content": tool_output
+                    })
 
-                messages.append({"role": "assistant", "content": response_text})
-                messages.append({"role": "user", "content": f"Résultat de l'outil {tool_name} : {tool_output}\n\nRédige maintenant ta réponse finale claire et professionnelle pour le CEO."})
+            # Génération du brouillon de réponse basé sur les outils
+            draft_completion = groq_client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=0.1
+            )
+            draft_response = draft_completion.choices[0].message.content.strip()
+        else:
+            draft_response = response_message.content.strip()
 
-                final_completion = groq_client.chat.completions.create(
-                    model=model_name,
-                    messages=messages,
-                    temperature=0.3,
-                )
-                response_text = final_completion.choices[0].message.content.strip()
-                
-                # Nettoyer si jamais le modèle réessaie de mettre du JSON en final
-                response_text = re.sub(r'\{.*\}', '', response_text, flags=re.DOTALL).strip()
+        if not draft_response:
+            draft_response = "Directive exécutée."
 
-        if not response_text:
-            response_text = "Mission exécutée."
+        # 2. ÉTAPE DE DOUBLE VÉRIFICATION (Contrôle interne des risques & hallucinations)
+        audit_prompt = (
+            "Agis en tant que Contrôleur Interne de Gouvernance et d'Audit des Risques pour le DG. "
+            "Examine rigoureusement le brouillon de réponse ci-dessous par rapport aux consignes de zéro tolérance aux hallucinations et aux faits bruts récupérés.\n\n"
+            f"Demande initiale du CEO : {user_text}\n"
+            f"Brouillon généré : {draft_response}\n\n"
+            "Règles d'audit strictes :\n"
+            "- Vérifie l'absence totale d'anachronismes (ex: statuts de joueurs, dates de matchs, incohérences temporelles).\n"
+            "- Si le brouillon contient des approximations ou des faits inventés non prouvés par les outils, corrige-les immédiatement.\n"
+            "- Conserve le ton professionnel, direct et exécutif.\n"
+            "Renvoie uniquement la version finale validée et corrigée, prête à être transmise au CEO."
+        )
 
+        audit_messages = [
+            {"role": "system", "content": "Tu es un auditeur de risques rigoureux et impartial."},
+            {"role": "user", "content": audit_prompt}
+        ]
+
+        audit_completion = groq_client.chat.completions.create(
+            model=model_name,
+            messages=audit_messages,
+            temperature=0.1
+        )
+        final_response = audit_completion.choices[0].message.content.strip()
+
+        if not final_response:
+            final_response = draft_response
+
+        # Journalisation officielle dans Supabase
         if supabase:
             try:
                 supabase.table("missions_log").insert({
-                    "project": project_name,
+                    "project": "Direction Générale - Entreprise",
                     "prompt": user_text,
-                    "response": response_text
+                    "response": final_response
                 }).execute()
             except Exception as e:
                 print(f"Erreur Supabase log: {e}")
 
         slack_client.chat_postMessage(
             channel=channel_id,
-            text=response_text
+            text=final_response
         )
     except Exception as e:
         print(f"Erreur d'exécution du moteur DG : {str(e)}")
         try:
             slack_client.chat_postMessage(
                 channel=channel_id,
-                text=f"⚠️ Incident technique : {str(e)}"
+                text=f"⚠️ Incident critique de gouvernance : {str(e)}"
             )
         except:
             pass
 
 @app.get("/")
 def read_root():
-    return {"status": "DG Multi-Tool Engine is operational"}
+    return {"status": "Enterprise DG Native Tool-Calling & Double-Verification Engine is operational"}
 
 @app.post("/slack/events")
 async def slack_events(request: Request, background_tasks: BackgroundTasks):
