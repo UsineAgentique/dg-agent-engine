@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import urllib.request
 import threading
 import time
@@ -65,9 +66,8 @@ def get_or_create_project(channel_id: str) -> str:
     return project_name
 
 
-# --- OUTIL 1 : Lecture de l'historique Supabase ---
+# --- OUTILS ---
 def query_missions_history(project_name: str) -> str:
-    """Interroge Supabase pour récupérer les dernières décisions ou missions enregistrées pour un projet."""
     if not supabase:
         return json.dumps({"error": "Base de données non disponible."})
     try:
@@ -76,13 +76,10 @@ def query_missions_history(project_name: str) -> str:
     except Exception as e:
         return json.dumps({"error": str(e)})
 
-
-# --- OUTIL 2 : Recherche Web en temps réel (Via Tavily AI) ---
 def search_web(query: str) -> str:
-    """Effectue une recherche web en direct et retourne des sources fiables et structurées."""
     tavily_key = os.environ.get("TAVILY_API_KEY")
     if not tavily_key:
-        return json.dumps({"error": "TAVILY_API_KEY non configurée sur le serveur."})
+        return json.dumps({"error": "TAVILY_API_KEY non configurée."})
     
     url = "https://api.tavily.com/search"
     payload = {
@@ -91,27 +88,18 @@ def search_web(query: str) -> str:
         "max_results": 3,
         "search_depth": "advanced"
     }
-    
     try:
         data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url, 
-            data=data, 
-            headers={"Content-Type": "application/json"}, 
-            method="POST"
-        )
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
         with urllib.request.urlopen(req, timeout=10) as response:
             res_data = json.loads(response.read().decode("utf-8"))
             results = res_data.get("results", [])
-            formatted_results = [{"title": r.get("title"), "content": r.get("content"), "url": r.get("url")} for r in results]
-            return json.dumps(formatted_results, ensure_ascii=False)
+            formatted = [{"title": r.get("title"), "content": r.get("content"), "url": r.get("url")} for r in results]
+            return json.dumps(formatted, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)})
 
-
-# --- OUTIL 3 : Écriture d'une décision dans Supabase ---
 def record_project_decision(project_name: str, decision_summary: str) -> str:
-    """Permet au DG d'enregistrer une décision stratégique ou une note de synthèse pour un projet."""
     if not supabase:
         return json.dumps({"error": "Base de données non disponible."})
     try:
@@ -120,10 +108,9 @@ def record_project_decision(project_name: str, decision_summary: str) -> str:
             "prompt": "[DÉCISION / NOTE STRATÉGIQUE DG]",
             "response": decision_summary
         }).execute()
-        return json.dumps({"status": "success", "message": "Décision enregistrée avec succès."})
+        return json.dumps({"status": "success", "message": "Décision enregistrée."})
     except Exception as e:
         return json.dumps({"error": str(e)})
-
 
 AVAILABLE_TOOLS = {
     "query_missions_history": query_missions_history,
@@ -131,70 +118,29 @@ AVAILABLE_TOOLS = {
     "record_project_decision": record_project_decision
 }
 
-TOOLS_SCHEMA = [
-    {
-        "type": "function",
-        "function": {
-            "name": "query_missions_history",
-            "description": "Consulte l'historique des missions et échanges passés stockés dans Supabase pour un projet.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "project_name": {"type": "string", "description": "Le nom exact du projet."}
-                },
-                "required": ["project_name"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_web",
-            "description": "Effectue une recherche sur le web en temps réel pour trouver des documentations, des actualités ou des informations techniques pointues.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "La requête de recherche précise."}
-                },
-                "required": ["query"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "record_project_decision",
-            "description": "Enregistre une décision stratégique ou une note importante validée par le DG pour un projet.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "project_name": {"type": "string", "description": "Le nom du projet."},
-                    "decision_summary": {"type": "string", "description": "Le contenu de la décision."}
-                },
-                "required": ["project_name", "decision_summary"]
-            }
-        }
-    }
-]
-
 def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
     if not groq_client or not slack_client:
         return
     
     if channel_type == "im":
         project_name = "Global / Direction Générale"
-        system_prompt = (
-            "Tu es le Directeur Général (DG) d'une structure d'agents autonomes en interaction directe avec le CEO. "
-            "Tu disposes d'outils puissants : tu peux chercher des informations sur le web en temps réel, "
-            "interroger la base de données et consigner des décisions."
-        )
     else:
         project_name = get_or_create_project(channel_id)
-        system_prompt = (
-            f"Tu es le Directeur Général (DG) pour le contexte : '{project_name}'. "
-            "Tu peux utiliser tes outils pour chercher des documentations techniques actualisées sur le web "
-            "ou enregistrer des arbitrages pour ce projet."
-        )
+
+    system_prompt = (
+        f"Tu es le Directeur Général (DG) pour le contexte : '{project_name}'. "
+        "Tu disposes d'outils que tu peux appeler si tu en as besoin pour répondre au CEO.\n"
+        "Pour utiliser un outil, réponds STRICTEMENT sous format JSON avec cette structure exacte, sans texte autour :\n"
+        "{\n"
+        '  "tool": "nom_de_l_outil",\n'
+        '  "arguments": { "param_1": "valeur_1" }\n'
+        "}\n\n"
+        "Outils disponibles :\n"
+        "1. query_missions_history(project_name: string)\n"
+        "2. search_web(query: string)\n"
+        "3. record_project_decision(project_name: string, decision_summary: string)\n\n"
+        "Si tu n'as pas besoin d'outil, réponds normalement en texte brut à ton interlocuteur."
+    )
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -202,46 +148,53 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
     ]
 
     try:
-        chat_completion = groq_client.chat.completions.create(
-            model="openai/gpt-oss-120b",
+        model_name = "llama-3.1-70b-versatile"
+
+        # Premier appel
+        completion = groq_client.chat.completions.create(
+            model=model_name,
             messages=messages,
-            tools=TOOLS_SCHEMA,
-            tool_choice="auto",
             temperature=0.7,
         )
-        
-        response_message = chat_completion.choices[0].message
-        response_text = response_message.content
-        
-        if response_message.tool_calls:
-            messages.append(response_message)
+        response_text = completion.choices[0].message.content.strip()
+
+        # Vérification si le modèle demande l'exécution d'un outil via JSON
+        tool_call_data = None
+        try:
+            # Nettoyage au cas où le modèle entoure le JSON de ```json ... ```
+            cleaned_json = re.sub(r"^```json\s*|\s*```$", "", response_text, flags=re.IGNORECASE).strip()
+            parsed = json.loads(cleaned_json)
+            if isinstance(parsed, dict) and "tool" in parsed and "arguments" in parsed:
+                tool_call_data = parsed
+        except:
+            pass
+
+        if tool_call_data:
+            tool_name = tool_call_data.get("tool")
+            tool_args = tool_call_data.get("arguments", {})
             
-            for tool_call in response_message.tool_calls:
-                function_name = tool_call.function.name
-                function_args = json.loads(tool_call.function.arguments)
-                
-                if function_name in AVAILABLE_TOOLS:
-                    tool_output = AVAILABLE_TOOLS[function_name](**function_args)
-                    messages.append({
-                        "tool_call_id": tool_call.id,
-                        "role": "tool",
-                        "name": function_name,
-                        "content": tool_output,
-                    })
-            
-            # CORRECTION : On force tool_choice="none" pour obliger le modèle à formuler la réponse textuelle
-            second_completion = groq_client.chat.completions.create(
-                model="openai/gpt-oss-120b",
-                messages=messages,
-                tools=TOOLS_SCHEMA,
-                tool_choice="none",
-                temperature=0.7,
-            )
-            response_text = second_completion.choices[0].message.content
-        
+            if tool_name in AVAILABLE_TOOLS:
+                # Injection automatique du project_name si l'outil l'attend et qu'il n'est pas fourni
+                if "project_name" in tool_args and not tool_args["project_name"]:
+                    tool_args["project_name"] = project_name
+
+                # Exécution de l'outil en Python
+                tool_output = AVAILABLE_TOOLS[tool_name](**tool_args)
+
+                # Second appel au modèle avec le résultat de l'outil pour qu'il rédige la réponse finale
+                messages.append({"role": "assistant", "content": response_text})
+                messages.append({"role": "user", "content": f"Résultat de l'outil {tool_name} : {tool_output}\n\nRédige maintenant ta réponse finale pour le CEO."})
+
+                final_completion = groq_client.chat.completions.create(
+                    model=model_name,
+                    messages=messages,
+                    temperature=0.7,
+                )
+                response_text = final_completion.choices[0].message.content.strip()
+
         if not response_text:
-            response_text = "Mission traitée, mais aucune réponse textuelle n'a été renvoyée par le modèle."
-        
+            response_text = "Mission exécutée."
+
         if supabase:
             try:
                 supabase.table("missions_log").insert({
@@ -251,13 +204,20 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
                 }).execute()
             except Exception as e:
                 print(f"Erreur Supabase log: {e}")
-        
+
         slack_client.chat_postMessage(
             channel=channel_id,
             text=response_text
         )
     except Exception as e:
-        print(f"Erreur d'exécution du moteur DG ({project_name}) : {str(e)}")
+        print(f"Erreur d'exécution du moteur DG : {str(e)}")
+        try:
+            slack_client.chat_postMessage(
+                channel=channel_id,
+                text=f"⚠️ Incident technique : {str(e)}"
+            )
+        except:
+            pass
 
 @app.get("/")
 def read_root():
