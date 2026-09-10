@@ -229,16 +229,16 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
                         "content": tool_output,
                     })
             
+            # CORRECTION : On force tool_choice="none" pour obliger le modèle à formuler la réponse textuelle
             second_completion = groq_client.chat.completions.create(
                 model="openai/gpt-oss-120b",
                 messages=messages,
                 tools=TOOLS_SCHEMA,
-                tool_choice="auto",
+                tool_choice="none",
                 temperature=0.7,
             )
             response_text = second_completion.choices[0].message.content
         
-        # Sécurité : si le texte est vide, on force un message par défaut
         if not response_text:
             response_text = "Mission traitée, mais aucune réponse textuelle n'a été renvoyée par le modèle."
         
