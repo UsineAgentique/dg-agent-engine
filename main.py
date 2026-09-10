@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import urllib.request
 import threading
 import time
@@ -135,9 +136,9 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
         '  "arguments": { "param_1": "valeur_1" }\n'
         "}\n\n"
         "Outils disponibles :\n"
-        "1. query_missions_history(project_name: string)\n"
-        "2. search_web(query: string)\n"
-        "3. record_project_decision(project_name: string, decision_summary: string)\n\n"
+        "1. search_web(query: string) -> OBLIGATOIRE pour toute question sur l'actualité, les scores de football, les matchs, ou toute information externe.\n"
+        "2. query_missions_history(project_name: string) -> Uniquement pour consulter l'historique interne des discussions et tâches du projet.\n"
+        "3. record_project_decision(project_name: string, decision_summary: string) -> Pour enregistrer une décision stratégique.\n\n"
         "Si tu n'as pas besoin d'outil, réponds normalement en texte brut à ton interlocuteur."
     )
 
@@ -235,12 +236,14 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
     
     is_mention = (event_type == "app_mention")
     is_dm = (event_type == "message" and channel_type == "im")
+    is_channel_msg = (event_type == "message" and channel_type in ["channel", "group"])
 
-    if is_mention or is_dm:
+    if is_mention or is_dm or is_channel_msg:
         channel_id = event.get("channel")
         user_text = event.get("text")
         
         if user_text and channel_id:
+            user_text = re.sub(r"<@U[A-Z0-9]+>", "", user_text).strip()
             background_tasks.add_task(process_dg_mission, channel_id, channel_type, user_text)
             
     return {"status": "ok"}
