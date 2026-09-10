@@ -148,7 +148,6 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
     ]
 
     try:
-        # Utilisation du modèle actif officiel sur Groq
         model_name = "llama-3.3-70b-versatile"
 
         completion = groq_client.chat.completions.create(
