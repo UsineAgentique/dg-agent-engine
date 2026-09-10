@@ -51,7 +51,7 @@ def get_or_create_project(channel_id: str) -> str:
             if channel_name:
                 project_name = f"Projet: {channel_name}"
         except Exception as e:
-            print(f"Erreur lecture Slack: {e}")
+            print(f"Erreur lecture Slack (permissions à ajouter): {e}")
 
     if supabase:
         try:
@@ -103,7 +103,6 @@ def search_web(query: str) -> str:
         with urllib.request.urlopen(req, timeout=10) as response:
             res_data = json.loads(response.read().decode("utf-8"))
             results = res_data.get("results", [])
-            # On extrait les éléments clés pour alléger le contexte pour le LLM
             formatted_results = [{"title": r.get("title"), "content": r.get("content"), "url": r.get("url")} for r in results]
             return json.dumps(formatted_results, ensure_ascii=False)
     except Exception as e:
@@ -126,14 +125,12 @@ def record_project_decision(project_name: str, decision_summary: str) -> str:
         return json.dumps({"error": str(e)})
 
 
-# Registre central des outils du DG
 AVAILABLE_TOOLS = {
     "query_missions_history": query_missions_history,
     "search_web": search_web,
     "record_project_decision": record_project_decision
 }
 
-# Schéma JSON mis à jour pour Groq
 TOOLS_SCHEMA = [
     {
         "type": "function",
@@ -231,9 +228,12 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
                         "content": tool_output,
                     })
             
+            # CORRECTION CRITIQUE ICI : On remet tools=TOOLS_SCHEMA pour le second appel
             second_completion = groq_client.chat.completions.create(
                 model="openai/gpt-oss-120b",
                 messages=messages,
+                tools=TOOLS_SCHEMA,
+                tool_choice="auto",
                 temperature=0.7,
             )
             response_text = second_completion.choices[0].message.content
@@ -259,7 +259,7 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
 
 @app.get("/")
 def read_root():
-    return {"status": "DG Advanced Search Engine is operational"}
+    return {"status": "DG Multi-Tool Engine is operational"}
 
 @app.post("/slack/events")
 async def slack_events(request: Request, background_tasks: BackgroundTasks):
