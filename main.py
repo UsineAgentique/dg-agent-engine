@@ -150,7 +150,6 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
     try:
         model_name = "llama-3.1-70b-versatile"
 
-        # Premier appel
         completion = groq_client.chat.completions.create(
             model=model_name,
             messages=messages,
@@ -158,10 +157,8 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
         )
         response_text = completion.choices[0].message.content.strip()
 
-        # Vérification si le modèle demande l'exécution d'un outil via JSON
         tool_call_data = None
         try:
-            # Nettoyage au cas où le modèle entoure le JSON de ```json ... ```
             cleaned_json = re.sub(r"^```json\s*|\s*```$", "", response_text, flags=re.IGNORECASE).strip()
             parsed = json.loads(cleaned_json)
             if isinstance(parsed, dict) and "tool" in parsed and "arguments" in parsed:
@@ -174,14 +171,11 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
             tool_args = tool_call_data.get("arguments", {})
             
             if tool_name in AVAILABLE_TOOLS:
-                # Injection automatique du project_name si l'outil l'attend et qu'il n'est pas fourni
                 if "project_name" in tool_args and not tool_args["project_name"]:
                     tool_args["project_name"] = project_name
 
-                # Exécution de l'outil en Python
                 tool_output = AVAILABLE_TOOLS[tool_name](**tool_args)
 
-                # Second appel au modèle avec le résultat de l'outil pour qu'il rédige la réponse finale
                 messages.append({"role": "assistant", "content": response_text})
                 messages.append({"role": "user", "content": f"Résultat de l'outil {tool_name} : {tool_output}\n\nRédige maintenant ta réponse finale pour le CEO."})
 
