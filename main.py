@@ -47,6 +47,7 @@ def get_enterprise_context() -> str:
     except Exception as e:
         return f"Erreur récupération projets: {str(e)}"
 
+# --- OUTILS MÉTIER BLINDÉS ---
 def search_web(query: str) -> str:
     """Recherche des informations actualisées, scores, faits ou actualités sur le web."""
     tavily_key = os.environ.get("TAVILY_API_KEY")
@@ -71,7 +72,7 @@ def search_web(query: str) -> str:
     except Exception as e:
         return json.dumps({"error": str(e)})
 
-def query_missions_history(project_name: str = "") -> str:
+def query_missions_history(project_name: str = None) -> str:
     """Consulte l'historique interne des discussions et tâches des projets de l'entreprise."""
     if not supabase:
         return json.dumps({"error": "Base de données non disponible."})
@@ -84,13 +85,14 @@ def query_missions_history(project_name: str = "") -> str:
     except Exception as e:
         return json.dumps({"error": str(e)})
 
-def record_enterprise_decision(decision_summary: str, project_name: str = "Direction Générale - Entreprise") -> str:
+def record_enterprise_decision(decision_summary: str, project_name: str = None) -> str:
     """Enregistre officiellement une décision stratégique ou une note de gouvernance."""
     if not supabase:
         return json.dumps({"error": "Base de données non disponible."})
+    target_project = project_name if project_name else "Direction Générale - Entreprise"
     try:
         supabase.table("missions_log").insert({
-            "project": project_name,
+            "project": target_project,
             "prompt": "[DÉCISION STRATÉGIQUE DG]",
             "response": decision_summary
         }).execute()
@@ -109,7 +111,7 @@ GROQ_TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "search_web",
-            "description": "OBLIGATOIRE pour toute question sur l'actualité, les scores, les faits réels ou les données changeantes.",
+            "description": "OBLIGATOIRE pour toute question sur l'actualité, les lois, les faits réels ou les données changeantes.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -131,8 +133,8 @@ GROQ_TOOLS_SCHEMA = [
                 "type": "object",
                 "properties": {
                     "project_name": {
-                        "type": "string",
-                        "description": "Nom spécifique du projet ou laisser vide pour l'ensemble."
+                        "type": ["string", "null"],
+                        "description": "Nom spécifique du projet ou laisser vide."
                     }
                 }
             }
@@ -151,7 +153,7 @@ GROQ_TOOLS_SCHEMA = [
                         "description": "Le résumé clair et concis de la décision prise."
                     },
                     "project_name": {
-                        "type": "string",
+                        "type": ["string", "null"],
                         "description": "Le projet concerné par la décision."
                     }
                 },
@@ -172,7 +174,7 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
         "coordonnes les activités et garantis une rigueur opérationnelle absolue.\n\n"
         f"CONTEXTE DE L'ENTREPRISE :\n{enterprise_portfolio}\n\n"
         "DOCTRINE DE GOUVERNANCE ET ZÉRO TOLÉRANCE AUX HALLUCINATIONS :\n"
-        "1. **Vérification factuelle stricte** : Tu n'as pas le droit d'inventer des faits, des scores, des transferts ou des données externes. Si une information dépend du monde réel ou de l'actualité, tu **DOIS** appeler l'outil `search_web`.\n"
+        "1. **Vérification factuelle stricte** : Tu n'as pas le droit d'inventer des faits, des lois, des scores ou des données externes. Si une information dépend du monde réel ou de l'actualité, tu **DOIS** appeler l'outil `search_web`.\n"
         "2. **Transparence d'exécution** : Si après une recherche les données sont introuvables, déclare-le explicitement au lieu de deviner.\n"
         "3. **Posture exécutive** : Ton ton est direct, professionnel, analytique et irréprochable.\n"
     )
@@ -185,6 +187,7 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
     try:
         model_name = "openai/gpt-oss-120b"
 
+        # 1. Premier appel : Le modèle analyse s'il a besoin d'outils
         completion = groq_client.chat.completions.create(
             model=model_name,
             messages=messages,
@@ -196,13 +199,19 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
         response_message = completion.choices[0].message
         messages.append(response_message)
 
+        # 2. Exécution sécurisée des outils avec nettoyage strict des arguments (suppression des nulls)
         if response_message.tool_calls:
             for tool_call in response_message.tool_calls:
                 tool_name = tool_call.function.name
-                tool_args = json.loads(tool_call.function.arguments or "{}")
+                raw_args = json.loads(tool_call.function.arguments or "{}")
+                # Assainissement senior : filtrer les valeurs nulles pour éviter les erreurs de validation de schéma API
+                clean_args = {k: v for k, v in raw_args.items() if v is not None}
 
                 if tool_name in AVAILABLE_TOOLS:
-                    tool_output = AVAILABLE_TOOLS[tool_name](**tool_args)
+                    try:
+                        tool_output = AVAILABLE_TOOLS[tool_name](**clean_args)
+                    except Exception as tool_err:
+                        tool_output = json.dumps({"error": str(tool_err)})
 
                     messages.append({
                         "role": "tool",
@@ -211,11 +220,11 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
                         "content": tool_output
                     })
 
+            # 3. Génération du brouillon en verrouillant tool_choice à "none" pour interdire toute boucle d'outil infinie
             draft_completion = groq_client.chat.completions.create(
                 model=model_name,
                 messages=messages,
-                tools=GROQ_TOOLS_SCHEMA,
-                tool_choice="auto",
+                tool_choice="none",
                 temperature=0.1
             )
             draft_response = draft_completion.choices[0].message.content.strip()
@@ -225,14 +234,15 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
         if not draft_response:
             draft_response = "Directive exécutée."
 
+        # 4. ÉTAPE DE DOUBLE VÉRIFICATION (Contrôle interne des risques & hallucinations)
         audit_prompt = (
             "Agis en tant que Contrôleur Interne de Gouvernance et d'Audit des Risques pour le DG. "
             "Examine rigoureusement le brouillon de réponse ci-dessous par rapport aux consignes de zéro tolérance aux hallucinations et aux faits bruts récupérés.\n\n"
             f"Demande initiale du CEO : {user_text}\n"
             f"Brouillon généré : {draft_response}\n\n"
             "Règles d'audit strictes :\n"
-            "- Vérifie l'absence totale d'anachronismes (ex: statuts de joueurs, dates de matchs, incohérences temporelles).\n"
-            "- Si le brouillon contient des approximations ou des faits inventés non prouvés par les outils, corrige-les immédiatement.\n"
+            "- Vérifie l'absence totale d'anachronismes ou d'approximations.\n"
+            "- Si le brouillon contient des faits inventés non prouvés, corrige-les immédiatement.\n"
             "- Conserve le ton professionnel, direct et exécutif.\n"
             "Renvoie uniquement la version finale validée et corrigée, prête à être transmise au CEO."
         )
@@ -252,6 +262,7 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
         if not final_response:
             final_response = draft_response
 
+        # Journalisation officielle dans Supabase
         if supabase:
             try:
                 supabase.table("missions_log").insert({
@@ -278,7 +289,7 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
 
 @app.get("/")
 def read_root():
-    return {"status": "Enterprise DG Native Tool-Calling & Double-Verification Engine is operational"}
+    return {"status": "Enterprise DG Senior Engine is operational"}
 
 @app.post("/slack/events")
 async def slack_events(request: Request, background_tasks: BackgroundTasks):
