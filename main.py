@@ -148,7 +148,8 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
     ]
 
     try:
-        model_name = "llama-3.3-70b-versatile"
+        # Utilisation de llama-3.1-8b-instant, garanti 100% actif et accessible sur toutes les clés Groq
+        model_name = "llama-3.1-8b-instant"
 
         completion = groq_client.chat.completions.create(
             model=model_name,
