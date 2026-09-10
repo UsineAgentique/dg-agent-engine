@@ -129,17 +129,17 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
 
     system_prompt = (
         f"Tu es le Directeur Général (DG) pour le contexte : '{project_name}'. "
-        "Tu disposes d'outils que tu peux appeler si tu en as besoin pour répondre au CEO.\n"
-        "Pour utiliser un outil, réponds STRICTEMENT sous format JSON avec cette structure exacte, sans texte autour :\n"
+        "Tu disposes d'outils que tu peux appeler si tu en as besoin.\n"
+        "Pour utiliser un outil, réponds STRICTEMENT et UNIQUEMENT au format JSON, sans aucun texte avant ou après :\n"
         "{\n"
         '  "tool": "nom_de_l_outil",\n'
         '  "arguments": { "param_1": "valeur_1" }\n'
         "}\n\n"
         "Outils disponibles :\n"
-        "1. search_web(query: string) -> OBLIGATOIRE pour toute question sur l'actualité, les scores de football, les matchs, ou toute information externe.\n"
-        "2. query_missions_history(project_name: string) -> Uniquement pour consulter l'historique interne des discussions et tâches du projet.\n"
+        "1. search_web(query: string) -> OBLIGATOIRE pour toute question sur l'actualité, les scores, les matchs, ou les infos en temps réel.\n"
+        "2. query_missions_history(project_name: string) -> Pour consulter l'historique interne.\n"
         "3. record_project_decision(project_name: string, decision_summary: string) -> Pour enregistrer une décision stratégique.\n\n"
-        "Si tu n'as pas besoin d'outil, réponds normalement en texte brut à ton interlocuteur."
+        "Si tu réponds en texte normal, réponds directement au CEO sans JSON."
     )
 
     messages = [
@@ -153,18 +153,20 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
         completion = groq_client.chat.completions.create(
             model=model_name,
             messages=messages,
-            temperature=0.7,
+            temperature=0.3, # Température plus basse pour éviter les délires/hallucinations
         )
         response_text = completion.choices[0].message.content.strip()
 
+        # Extraction robuste du JSON peu importe le texte autour
         tool_call_data = None
         try:
-            cleaned_json = response_text.replace("```json", "").replace("```", "").strip()
-            parsed = json.loads(cleaned_json)
-            if isinstance(parsed, dict) and "tool" in parsed and "arguments" in parsed:
-                tool_call_data = parsed
-        except:
-            pass
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                parsed = json.loads(json_match.group(0))
+                if isinstance(parsed, dict) and "tool" in parsed and "arguments" in parsed:
+                    tool_call_data = parsed
+        except Exception as e:
+            print(f"Erreur parsing JSON outil : {e}")
 
         if tool_call_data:
             tool_name = tool_call_data.get("tool")
@@ -177,14 +179,17 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
                 tool_output = AVAILABLE_TOOLS[tool_name](**tool_args)
 
                 messages.append({"role": "assistant", "content": response_text})
-                messages.append({"role": "user", "content": f"Résultat de l'outil {tool_name} : {tool_output}\n\nRédige maintenant ta réponse finale pour le CEO."})
+                messages.append({"role": "user", "content": f"Résultat de l'outil {tool_name} : {tool_output}\n\nRédige maintenant ta réponse finale claire et professionnelle pour le CEO."})
 
                 final_completion = groq_client.chat.completions.create(
                     model=model_name,
                     messages=messages,
-                    temperature=0.7,
+                    temperature=0.3,
                 )
                 response_text = final_completion.choices[0].message.content.strip()
+                
+                # Nettoyer si jamais le modèle réessaie de mettre du JSON en final
+                response_text = re.sub(r'\{.*\}', '', response_text, flags=re.DOTALL).strip()
 
         if not response_text:
             response_text = "Mission exécutée."
