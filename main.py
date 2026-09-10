@@ -1,8 +1,8 @@
 import os
 import json
+import urllib.request
 import threading
 import time
-import urllib.request
 from fastapi import FastAPI, Request, BackgroundTasks
 from slack_sdk import WebClient
 from groq import Groq
@@ -64,8 +64,8 @@ def get_or_create_project(channel_id: str) -> str:
 
     return project_name
 
-# --- DÉFINITION DES OUTILS (TOOLS / MCP NACTIFS) ---
 
+# --- OUTIL 1 : Lecture de l'historique Supabase ---
 def query_missions_history(project_name: str) -> str:
     """Interroge Supabase pour récupérer les dernières décisions ou missions enregistrées pour un projet."""
     if not supabase:
@@ -76,42 +76,109 @@ def query_missions_history(project_name: str) -> str:
     except Exception as e:
         return json.dumps({"error": str(e)})
 
-# Registre des fonctions exécutables par le DG
+
+# --- OUTIL 2 : Recherche Web en temps réel (Via Tavily AI) ---
+def search_web(query: str) -> str:
+    """Effectue une recherche web en direct et retourne des sources fiables et structurées."""
+    tavily_key = os.environ.get("TAVILY_API_KEY")
+    if not tavily_key:
+        return json.dumps({"error": "TAVILY_API_KEY non configurée sur le serveur."})
+    
+    url = "https://api.tavily.com/search"
+    payload = {
+        "api_key": tavily_key,
+        "query": query,
+        "max_results": 3,
+        "search_depth": "advanced"
+    }
+    
+    try:
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url, 
+            data=data, 
+            headers={"Content-Type": "application/json"}, 
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            res_data = json.loads(response.read().decode("utf-8"))
+            results = res_data.get("results", [])
+            # On extrait les éléments clés pour alléger le contexte pour le LLM
+            formatted_results = [{"title": r.get("title"), "content": r.get("content"), "url": r.get("url")} for r in results]
+            return json.dumps(formatted_results, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+# --- OUTIL 3 : Écriture d'une décision dans Supabase ---
+def record_project_decision(project_name: str, decision_summary: str) -> str:
+    """Permet au DG d'enregistrer une décision stratégique ou une note de synthèse pour un projet."""
+    if not supabase:
+        return json.dumps({"error": "Base de données non disponible."})
+    try:
+        supabase.table("missions_log").insert({
+            "project": project_name,
+            "prompt": "[DÉCISION / NOTE STRATÉGIQUE DG]",
+            "response": decision_summary
+        }).execute()
+        return json.dumps({"status": "success", "message": "Décision enregistrée avec succès."})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+# Registre central des outils du DG
 AVAILABLE_TOOLS = {
-    "query_missions_history": query_missions_history
+    "query_missions_history": query_missions_history,
+    "search_web": search_web,
+    "record_project_decision": record_project_decision
 }
 
-# Schéma JSON décrivant l'outil pour Groq
+# Schéma JSON mis à jour pour Groq
 TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
             "name": "query_missions_history",
-            "description": "Permet de consulter l'historique des missions, requêtes et décisions passées stockées dans Supabase pour un projet spécifique.",
+            "description": "Consulte l'historique des missions et échanges passés stockés dans Supabase pour un projet.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "project_name": {
-                        "type": "string",
-                        "description": "Le nom exact du projet ou du contexte dont on veut l'historique."
-                    }
+                    "project_name": {"type": "string", "description": "Le nom exact du projet."}
                 },
                 "required": ["project_name"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_web",
+            "description": "Effectue une recherche sur le web en temps réel pour trouver des documentations, des actualités ou des informations techniques pointues.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "La requête de recherche précise."}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "record_project_decision",
+            "description": "Enregistre une décision stratégique ou une note importante validée par le DG pour un projet.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_name": {"type": "string", "description": "Le nom du projet."},
+                    "decision_summary": {"type": "string", "description": "Le contenu de la décision."}
+                },
+                "required": ["project_name", "decision_summary"]
+            }
+        }
     }
 ]
-
-def log_mission_to_supabase(project_name: str, prompt: str, response: str):
-    if supabase:
-        try:
-            supabase.table("missions_log").insert({
-                "project": project_name,
-                "prompt": prompt,
-                "response": response
-            }).execute()
-        except Exception as e:
-            print(f"Erreur Supabase log: {e}")
 
 def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
     if not groq_client or not slack_client:
@@ -120,15 +187,16 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
     if channel_type == "im":
         project_name = "Global / Direction Générale"
         system_prompt = (
-            "Tu es le Directeur Général (DG) d'une structure d'agents autonomes. "
-            "Tu es en entretien direct et privé avec le CEO. Tu disposes d'outils pour interroger "
-            "la base de données si tu as besoin de retrouver l'historique d'un projet avant d'arbitrer."
+            "Tu es le Directeur Général (DG) d'une structure d'agents autonomes en interaction directe avec le CEO. "
+            "Tu disposes d'outils puissants : tu peux chercher des informations sur le web en temps réel, "
+            "interroger la base de données et consigner des décisions."
         )
     else:
         project_name = get_or_create_project(channel_id)
         system_prompt = (
             f"Tu es le Directeur Général (DG) pour le contexte : '{project_name}'. "
-            "Tu analyses les directives et peux utiliser tes outils pour vérifier l'historique des actions passées."
+            "Tu peux utiliser tes outils pour chercher des documentations techniques actualisées sur le web "
+            "ou enregistrer des arbitrages pour ce projet."
         )
 
     messages = [
@@ -137,7 +205,6 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
     ]
 
     try:
-        # Premier appel à Groq avec les outils activés
         chat_completion = groq_client.chat.completions.create(
             model="openai/gpt-oss-120b",
             messages=messages,
@@ -148,9 +215,7 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
         
         response_message = chat_completion.choices[0].message
         
-        # Vérification si le modèle souhaite appeler une fonction
         if response_message.tool_calls:
-            # Ajout de la réponse du modèle contenant les tool_calls à l'historique
             messages.append(response_message)
             
             for tool_call in response_message.tool_calls:
@@ -158,10 +223,7 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
                 function_args = json.loads(tool_call.function.arguments)
                 
                 if function_name in AVAILABLE_TOOLS:
-                    # Exécution de la fonction Python locale
                     tool_output = AVAILABLE_TOOLS[function_name](**function_args)
-                    
-                    # Ajout du résultat de l'outil dans l'historique des messages
                     messages.append({
                         "tool_call_id": tool_call.id,
                         "role": "tool",
@@ -169,7 +231,6 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
                         "content": tool_output,
                     })
             
-            # Second appel à Groq pour que le modèle formule sa réponse finale basée sur le retour de l'outil
             second_completion = groq_client.chat.completions.create(
                 model="openai/gpt-oss-120b",
                 messages=messages,
@@ -179,7 +240,15 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
         else:
             response_text = response_message.content
         
-        log_mission_to_supabase(project_name, user_text, response_text)
+        if supabase:
+            try:
+                supabase.table("missions_log").insert({
+                    "project": project_name,
+                    "prompt": user_text,
+                    "response": response_text
+                }).execute()
+            except Exception as e:
+                print(f"Erreur Supabase log: {e}")
         
         slack_client.chat_postMessage(
             channel=channel_id,
@@ -190,7 +259,7 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
 
 @app.get("/")
 def read_root():
-    return {"status": "DG Function Calling Engine is operational"}
+    return {"status": "DG Advanced Search Engine is operational"}
 
 @app.post("/slack/events")
 async def slack_events(request: Request, background_tasks: BackgroundTasks):
