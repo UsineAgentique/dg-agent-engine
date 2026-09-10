@@ -51,7 +51,7 @@ def get_or_create_project(channel_id: str) -> str:
             if channel_name:
                 project_name = f"Projet: {channel_name}"
         except Exception as e:
-            print(f"Erreur lecture Slack (permissions à ajouter): {e}")
+            print(f"Erreur lecture Slack: {e}")
 
     if supabase:
         try:
@@ -211,6 +211,7 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
         )
         
         response_message = chat_completion.choices[0].message
+        response_text = response_message.content
         
         if response_message.tool_calls:
             messages.append(response_message)
@@ -228,7 +229,6 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
                         "content": tool_output,
                     })
             
-            # CORRECTION CRITIQUE ICI : On remet tools=TOOLS_SCHEMA pour le second appel
             second_completion = groq_client.chat.completions.create(
                 model="openai/gpt-oss-120b",
                 messages=messages,
@@ -237,8 +237,10 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
                 temperature=0.7,
             )
             response_text = second_completion.choices[0].message.content
-        else:
-            response_text = response_message.content
+        
+        # Sécurité : si le texte est vide, on force un message par défaut
+        if not response_text:
+            response_text = "Mission traitée, mais aucune réponse textuelle n'a été renvoyée par le modèle."
         
         if supabase:
             try:
