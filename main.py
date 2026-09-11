@@ -185,7 +185,6 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
     try:
         model_name = "openai/gpt-oss-120b"
 
-        # 1. Premier appel avec le modèle officiel et les outils activés
         completion = groq_client.chat.completions.create(
             model=model_name,
             messages=messages,
@@ -197,7 +196,6 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
         response_message = completion.choices[0].message
         messages.append(response_message)
 
-        # 2. Exécution des outils si demandés par le modèle
         if response_message.tool_calls:
             for tool_call in response_message.tool_calls:
                 tool_name = tool_call.function.name
@@ -219,7 +217,6 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
                     "content": tool_output
                 })
 
-            # 3. Appel final EN CONSERVANT les outils pour éviter l'erreur 400 de validation Groq
             final_completion = groq_client.chat.completions.create(
                 model=model_name,
                 messages=messages,
@@ -227,11 +224,11 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
                 tool_choice="auto",
                 temperature=0.1
             )
-            draft_response = final_completion.choices[0].message.content.strip()
+            final_msg = final_completion.choices[0].message
+            draft_response = final_msg.content.strip() if final_msg.content else "Directive exécutée avec succès."
         else:
             draft_response = response_message.content.strip() if response_message.content else "Directive exécutée."
 
-        # 4. Journalisation et publication Slack
         if supabase:
             try:
                 supabase.table("missions_log").insert({
@@ -259,7 +256,7 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
 
 @app.get("/")
 def read_root():
-    return {"status": "Enterprise DG Senior Engine is operational (GPT-OSS-120B with Tools)"}
+    return {"status": "Enterprise DG Senior Engine is operational (GPT-OSS-120B Fixed NoneType)"}
 
 @app.post("/slack/events")
 async def slack_events(request: Request, background_tasks: BackgroundTasks):
