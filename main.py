@@ -12,7 +12,7 @@ from supabase import create_client, Client
 app = FastAPI()
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
 groq_api_key = os.environ.get("GROQ_API_KEY")
@@ -188,7 +188,6 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
         draft_response = "Directive exécutée avec succès."
         max_turns = 4
 
-        # Boucle multi-tours pour permettre l'enchaînement successif des outils
         for _ in range(max_turns):
             completion = groq_client.chat.completions.create(
                 model=model_name,
@@ -253,7 +252,7 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
 
 @app.get("/")
 def read_root():
-    return {"status": "Enterprise DG Senior Engine is operational (Multi-turn Loop)"}
+    return {"status": "Enterprise DG Senior Engine is operational (Multi-turn Loop & RoleKey)"}
 
 @app.post("/slack/events")
 async def slack_events(request: Request, background_tasks: BackgroundTasks):
