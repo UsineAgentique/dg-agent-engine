@@ -95,7 +95,7 @@ def record_enterprise_decision(decision_summary: str, project_name: str = None) 
             "prompt": "[DÉCISION STRATÉGIQUE DG]",
             "response": decision_summary
         }).execute()
-        return json.dumps({"status": "success", "message": "Décision enregistrée avec succès."})
+        return json.dumps({"status": "success", "message": "Décision enregistrée avec succès dans Supabase."})
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -174,7 +174,8 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
         f"CONTEXTE DE L'ENTREPRISE :\n{enterprise_portfolio}\n\n"
         "DOCTRINE DE GOUVERNANCE :\n"
         "1. Si une information dépend du monde réel ou de l'actualité, appelle l'outil `search_web`.\n"
-        "2. Ton ton est direct, professionnel, analytique et irréprochable."
+        "2. Si tu dois valider ou retenir une orientation majeure, appelle `record_enterprise_decision`.\n"
+        "3. Ton ton est direct, professionnel, analytique et irréprochable."
     )
 
     messages = [
@@ -184,50 +185,46 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
 
     try:
         model_name = "openai/gpt-oss-120b"
+        draft_response = "Directive exécutée avec succès."
+        max_turns = 4
 
-        completion = groq_client.chat.completions.create(
-            model=model_name,
-            messages=messages,
-            tools=GROQ_TOOLS_SCHEMA,
-            tool_choice="auto",
-            temperature=0.1
-        )
-        
-        response_message = completion.choices[0].message
-        messages.append(response_message)
-
-        if response_message.tool_calls:
-            for tool_call in response_message.tool_calls:
-                tool_name = tool_call.function.name
-                raw_args = json.loads(tool_call.function.arguments or "{}")
-                clean_args = {k: v for k, v in raw_args.items() if v is not None}
-
-                if tool_name in AVAILABLE_TOOLS:
-                    try:
-                        tool_output = AVAILABLE_TOOLS[tool_name](**clean_args)
-                    except Exception as tool_err:
-                        tool_output = json.dumps({"error": str(tool_err)})
-                else:
-                    tool_output = json.dumps({"error": "Outil inconnu"})
-
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "name": tool_name,
-                    "content": tool_output
-                })
-
-            final_completion = groq_client.chat.completions.create(
+        # Boucle multi-tours pour permettre l'enchaînement successif des outils
+        for _ in range(max_turns):
+            completion = groq_client.chat.completions.create(
                 model=model_name,
                 messages=messages,
                 tools=GROQ_TOOLS_SCHEMA,
                 tool_choice="auto",
                 temperature=0.1
             )
-            final_msg = final_completion.choices[0].message
-            draft_response = final_msg.content.strip() if final_msg.content else "Directive exécutée avec succès."
-        else:
-            draft_response = response_message.content.strip() if response_message.content else "Directive exécutée."
+            
+            response_message = completion.choices[0].message
+            messages.append(response_message)
+
+            if response_message.tool_calls:
+                for tool_call in response_message.tool_calls:
+                    tool_name = tool_call.function.name
+                    raw_args = json.loads(tool_call.function.arguments or "{}")
+                    clean_args = {k: v for k, v in raw_args.items() if v is not None}
+
+                    if tool_name in AVAILABLE_TOOLS:
+                        try:
+                            tool_output = AVAILABLE_TOOLS[tool_name](**clean_args)
+                        except Exception as tool_err:
+                            tool_output = json.dumps({"error": str(tool_err)})
+                    else:
+                        tool_output = json.dumps({"error": "Outil inconnu"})
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "name": tool_name,
+                        "content": tool_output
+                    })
+            else:
+                if response_message.content:
+                    draft_response = response_message.content.strip()
+                break
 
         if supabase:
             try:
@@ -256,7 +253,7 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
 
 @app.get("/")
 def read_root():
-    return {"status": "Enterprise DG Senior Engine is operational (GPT-OSS-120B Fixed NoneType)"}
+    return {"status": "Enterprise DG Senior Engine is operational (Multi-turn Loop)"}
 
 @app.post("/slack/events")
 async def slack_events(request: Request, background_tasks: BackgroundTasks):
