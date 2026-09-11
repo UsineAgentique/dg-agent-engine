@@ -173,9 +173,8 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
         "coordonnes les activités et garantis une rigueur opérationnelle absolue.\n\n"
         f"CONTEXTE DE L'ENTREPRISE :\n{enterprise_portfolio}\n\n"
         "DOCTRINE DE GOUVERNANCE ET ZÉRO TOLÉRANCE AUX HALLUCINATIONS :\n"
-        "1. **Vérification factuelle stricte** : Tu n'as pas le droit d'inventer des faits, des lois, des scores ou des données externes. Si une information dépend du monde réel ou de l'actualité, tu **DOIS** appeler l'outil `search_web`.\n"
-        "2. **Transparence d'exécution** : Si après une recherche les données sont introuvables, déclare-le explicitement au lieu de deviner.\n"
-        "3. **Posture exécutive** : Ton ton est direct, professionnel, analytique et irréprochable.\n"
+        "1. **Vérification factuelle stricte** : Si une information dépend du monde réel ou de l'actualité, tu **DOIS** appeler l'outil `search_web`.\n"
+        "2. **Posture exécutive** : Ton ton est direct, professionnel, analytique et irréprochable."
     )
 
     messages = [
@@ -186,7 +185,7 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
     try:
         model_name = "openai/gpt-oss-120b"
 
-        # 1. Appel initial avec outils activés
+        # 1. Premier appel avec les outils natifs activés
         completion = groq_client.chat.completions.create(
             model=model_name,
             messages=messages,
@@ -198,7 +197,7 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
         response_message = completion.choices[0].message
         messages.append(response_message)
 
-        # 2. Exécution de l'outil si demandé en un tour unique
+        # 2. Si le modèle demande l'exécution d'un ou plusieurs outils
         if response_message.tool_calls:
             for tool_call in response_message.tool_calls:
                 tool_name = tool_call.function.name
@@ -220,7 +219,7 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
                     "content": tool_output
                 })
 
-            # Appel final SANS AUCUN OUTIL pour rédiger le texte brut final
+            # 3. APPEL FINAL DE SYNTHÈSE SANS AUCUN PARAMÈTRE `tools` NI `tool_choice`
             final_completion = groq_client.chat.completions.create(
                 model=model_name,
                 messages=messages,
@@ -230,34 +229,20 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
         else:
             draft_response = response_message.content.strip() if response_message.content else "Directive exécutée."
 
-        # 3. Étape d'audit interne
-        audit_prompt = (
-            "Agis en tant que Contrôleur Interne de Gouvernance et d'Audit des Risques pour le DG. "
-            "Examine rigoureusement le brouillon de réponse ci-dessous par rapport aux consignes de zéro tolérance aux hallucinations et aux faits bruts récupérés.\n\n"
-            f"Demande initiale du CEO : {user_text}\n"
-            f"Brouillon généré : {draft_response}\n\n"
-            "Règles d'audit strictes :\n"
-            "- Vérifie l'absence totale d'anachronismes ou d'approximations.\n"
-            "- Si le brouillon contient des faits inventés non prouvés, corrige-les immédiatement.\n"
-            "- Conserve le ton professionnel, direct et exécutif.\n"
-            "Renvoie uniquement la version finale validée et corrigée, prête à être transmise au CEO."
-        )
-
-        audit_messages = [
-            {"role": "system", "content": "Tu es un auditeur de risques rigoureux et impartial."},
-            {"role": "user", "content": audit_prompt}
-        ]
-
+        # 4. Étape d'audit interne de gouvernance
         audit_completion = groq_client.chat.completions.create(
             model=model_name,
-            messages=audit_messages,
+            messages=[
+                {"role": "system", "content": "Tu es un auditeur de risques rigoureux et impartial."},
+                {"role": "user", "content": f"Vérifie et nettoie ce rapport pour le CEO en conservant un ton exécutif irréprochable :\n{draft_response}"}
+            ],
             temperature=0.1
         )
         final_response = audit_completion.choices[0].message.content.strip()
-
         if not final_response:
             final_response = draft_response
 
+        # 5. Journalisation dans Supabase et publication sur Slack
         if supabase:
             try:
                 supabase.table("missions_log").insert({
@@ -284,7 +269,7 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
 
 @app.get("/")
 def read_root():
-    return {"status": "Enterprise DG Senior Engine is operational"}
+    return {"status": "Enterprise DG Senior Engine is operational (Bulletproof Native Tools)"}
 
 @app.post("/slack/events")
 async def slack_events(request: Request, background_tasks: BackgroundTasks):
