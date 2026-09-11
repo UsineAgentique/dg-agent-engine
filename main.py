@@ -47,6 +47,121 @@ def get_enterprise_context() -> str:
     except Exception as e:
         return f"Erreur récupération projets: {str(e)}"
 
+def search_web(query: str) -> str:
+    """Recherche des informations actualisées, scores, faits ou actualités sur le web."""
+    tavily_key = os.environ.get("TAVILY_API_KEY")
+    if not tavily_key:
+        return json.dumps({"error": "TAVILY_API_KEY non configurée."})
+    
+    url = "https://api.tavily.com/search"
+    payload = {
+        "api_key": tavily_key,
+        "query": query,
+        "max_results": 3,
+        "search_depth": "advanced"
+    }
+    try:
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as response:
+            res_data = json.loads(response.read().decode("utf-8"))
+            results = res_data.get("results", [])
+            formatted = [{"title": r.get("title"), "content": r.get("content"), "url": r.get("url")} for r in results]
+            return json.dumps(formatted, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+def query_missions_history(project_name: str = None) -> str:
+    """Consulte l'historique interne des discussions et tâches des projets de l'entreprise."""
+    if not supabase:
+        return json.dumps({"error": "Base de données non disponible."})
+    try:
+        query_builder = supabase.table("missions_log").select("project, prompt, response, created_at")
+        if project_name and project_name.lower() != "global":
+            query_builder = query_builder.eq("project", project_name)
+        res = query_builder.order("created_at", desc=True).limit(5).execute()
+        return json.dumps(res.data, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+def record_enterprise_decision(decision_summary: str, project_name: str = None) -> str:
+    """Enregistre officiellement une décision stratégique ou une note de gouvernance."""
+    if not supabase:
+        return json.dumps({"error": "Base de données non disponible."})
+    target_project = project_name if project_name else "Direction Générale - Entreprise"
+    try:
+        supabase.table("missions_log").insert({
+            "project": target_project,
+            "prompt": "[DÉCISION STRATÉGIQUE DG]",
+            "response": decision_summary
+        }).execute()
+        return json.dumps({"status": "success", "message": "Décision enregistrée avec succès."})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+AVAILABLE_TOOLS = {
+    "search_web": search_web,
+    "query_missions_history": query_missions_history,
+    "record_enterprise_decision": record_enterprise_decision
+}
+
+GROQ_TOOLS_SCHEMA = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_web",
+            "description": "OBLIGATOIRE pour toute question sur l'actualité, les lois, les faits réels ou les données changeantes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "La requête de recherche claire et optimisée."
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_missions_history",
+            "description": "Consulte l'historique interne des projets de l'entreprise.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_name": {
+                        "type": ["string", "null"],
+                        "description": "Nom spécifique du projet ou laisser vide."
+                    }
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "record_enterprise_decision",
+            "description": "Enregistre une décision stratégique ou une note de gouvernance officielle.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "decision_summary": {
+                        "type": "string",
+                        "description": "Le résumé clair et concis de la décision prise."
+                    },
+                    "project_name": {
+                        "type": ["string", "null"],
+                        "description": "Le projet concerné par la décision."
+                    }
+                },
+                "required": ["decision_summary"]
+            }
+        }
+    }
+]
+
 def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
     if not groq_client or not slack_client:
         return
@@ -54,14 +169,12 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
     enterprise_portfolio = get_enterprise_context()
 
     system_prompt = (
-        "Tu es le Directeur Général (DG) senior d'une grande entreprise technologique. "
-        "Tu pilotes les stratégies globales, l'architecture, la conformité réglementaire (AI Act, Data Act) "
-        "et la gouvernance opérationnelle avec une rigueur absolue.\n\n"
+        "Tu es le Directeur Général (DG) de l'entreprise. Tu pilotes l'ensemble des projets, "
+        "coordonnes les activités et garantis une rigueur opérationnelle absolue.\n\n"
         f"CONTEXTE DE L'ENTREPRISE :\n{enterprise_portfolio}\n\n"
-        "EXIGENCES DE PRODUCTION ET NIVEAU AVANCÉ DES OUTPUTS :\n"
-        "- Fournis des analyses stratégiques approfondies, structurées et directement actionnables.\n"
-        "- Intègre systématiquement : 1) Diagnostic et enjeux critiques, 2) Plan d'architecture technique ou opérationnel détaillé, 3) Gestion des risques et conformité, 4) Recommandations exécutives claires.\n"
-        "- Bannis toute approximation ou ton superficiel. Sois incisif, technique et irréprochable."
+        "DOCTRINE DE GOUVERNANCE :\n"
+        "1. Si une information dépend du monde réel ou de l'actualité, appelle l'outil `search_web`.\n"
+        "2. Ton ton est direct, professionnel, analytique et irréprochable."
     )
 
     messages = [
@@ -72,46 +185,66 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
     try:
         model_name = "openai/gpt-oss-120b"
 
-        # Appel direct sans outils externes conflictuels pour éliminer définitivement l'erreur 400
+        # 1. Premier appel avec le modèle officiel et les outils activés
         completion = groq_client.chat.completions.create(
             model=model_name,
             messages=messages,
-            temperature=0.2,
-            max_tokens=4096
+            tools=GROQ_TOOLS_SCHEMA,
+            tool_choice="auto",
+            temperature=0.1
         )
         
-        draft_response = completion.choices[0].message.content.strip()
+        response_message = completion.choices[0].message
+        messages.append(response_message)
 
-        # Passe secondaire d'audit exécutif pour garantir un niveau professionnel et avancé maximal
-        audit_completion = groq_client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": "Tu es un auditeur de haut niveau spécialisé dans la mise en forme de rapports de direction générale."},
-                {"role": "user", "content": f"Affine, structure et élève la qualité exécutive de cette note pour la direction en conservant un style percutant et professionnel :\n\n{draft_response}"}
-            ],
-            temperature=0.1,
-            max_tokens=4096
-        )
-        
-        final_response = audit_completion.choices[0].message.content.strip()
-        if not final_response:
-            final_response = draft_response
+        # 2. Exécution des outils si demandés par le modèle
+        if response_message.tool_calls:
+            for tool_call in response_message.tool_calls:
+                tool_name = tool_call.function.name
+                raw_args = json.loads(tool_call.function.arguments or "{}")
+                clean_args = {k: v for k, v in raw_args.items() if v is not None}
 
-        # Journalisation dans Supabase
+                if tool_name in AVAILABLE_TOOLS:
+                    try:
+                        tool_output = AVAILABLE_TOOLS[tool_name](**clean_args)
+                    except Exception as tool_err:
+                        tool_output = json.dumps({"error": str(tool_err)})
+                else:
+                    tool_output = json.dumps({"error": "Outil inconnu"})
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "name": tool_name,
+                    "content": tool_output
+                })
+
+            # 3. Appel final EN CONSERVANT les outils pour éviter l'erreur 400 de validation Groq
+            final_completion = groq_client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                tools=GROQ_TOOLS_SCHEMA,
+                tool_choice="auto",
+                temperature=0.1
+            )
+            draft_response = final_completion.choices[0].message.content.strip()
+        else:
+            draft_response = response_message.content.strip() if response_message.content else "Directive exécutée."
+
+        # 4. Journalisation et publication Slack
         if supabase:
             try:
                 supabase.table("missions_log").insert({
                     "project": "Direction Générale - Entreprise",
                     "prompt": user_text,
-                    "response": final_response
+                    "response": draft_response
                 }).execute()
             except Exception as e:
                 print(f"Erreur Supabase log: {e}")
 
-        # Publication sur Slack
         slack_client.chat_postMessage(
             channel=channel_id,
-            text=final_response
+            text=draft_response
         )
     except Exception as e:
         error_msg = f"⚠️ Incident critique de gouvernance : {str(e)}"
@@ -126,7 +259,7 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
 
 @app.get("/")
 def read_root():
-    return {"status": "Enterprise DG Senior Engine is operational (GPT-OSS-120B Stabilized)"}
+    return {"status": "Enterprise DG Senior Engine is operational (GPT-OSS-120B with Tools)"}
 
 @app.post("/slack/events")
 async def slack_events(request: Request, background_tasks: BackgroundTasks):
