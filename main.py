@@ -1,3 +1,167 @@
+import os
+import json
+import urllib.request
+import threading
+import time
+import re
+from fastapi import FastAPI, Request, BackgroundTasks
+from slack_sdk import WebClient
+from groq import Groq
+from supabase import create_client, Client
+
+app = FastAPI()
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
+
+groq_api_key = os.environ.get("GROQ_API_KEY")
+groq_client = Groq(api_key=groq_api_key) if groq_api_key else None
+
+slack_token = os.environ.get("SLACK_BOT_TOKEN")
+slack_client = WebClient(token=slack_token) if slack_token else None
+
+def keep_alive():
+    app_url = os.environ.get("RENDER_EXTERNAL_URL", "https://dg-agent-engine.onrender.com")
+    while True:
+        try:
+            urllib.request.urlopen(app_url, timeout=10)
+        except Exception:
+            pass
+        time.sleep(600)
+
+@app.on_event("startup")
+def startup_event():
+    thread = threading.Thread(target=keep_alive, daemon=True)
+    thread.start()
+
+def get_enterprise_context() -> str:
+    if not supabase:
+        return "Aucun projet enregistré (Base de données indisponible)."
+    try:
+        res = supabase.table("projects").select("project_name, channel_id").execute()
+        if res.data:
+            projects = [f"- {p['project_name']} (Canal: {p['channel_id']})" for p in res.data]
+            return "Portfolio actif des projets de l'entreprise :\n" + "\n".join(projects)
+        return "Aucun projet actif enregistré pour le moment."
+    except Exception as e:
+        return f"Erreur récupération projets: {str(e)}"
+
+def search_web(query: str) -> str:
+    """Recherche des informations actualisées, scores, faits ou actualités sur le web."""
+    tavily_key = os.environ.get("TAVILY_API_KEY")
+    if not tavily_key:
+        return json.dumps({"error": "TAVILY_API_KEY non configurée."})
+    
+    url = "https://api.tavily.com/search"
+    payload = {
+        "api_key": tavily_key,
+        "query": query,
+        "max_results": 3,
+        "search_depth": "advanced"
+    }
+    try:
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as response:
+            res_data = json.loads(response.read().decode("utf-8"))
+            results = res_data.get("results", [])
+            formatted = [{"title": r.get("title"), "content": r.get("content"), "url": r.get("url")} for r in results]
+            return json.dumps(formatted, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+def query_missions_history(project_name: str = None) -> str:
+    """Consulte l'historique interne des discussions et tâches des projets de l'entreprise."""
+    if not supabase:
+        return json.dumps({"error": "Base de données non disponible."})
+    try:
+        query_builder = supabase.table("missions_log").select("project, prompt, response, created_at")
+        if project_name and project_name.lower() != "global":
+            query_builder = query_builder.eq("project", project_name)
+        res = query_builder.order("created_at", desc=True).limit(5).execute()
+        return json.dumps(res.data, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+def record_enterprise_decision(decision_summary: str, project_name: str = None) -> str:
+    """Enregistre officiellement une décision stratégique ou une note de gouvernance."""
+    if not supabase:
+        return json.dumps({"error": "Base de données non disponible."})
+    target_project = project_name if project_name else "Direction Générale - Entreprise"
+    try:
+        supabase.table("missions_log").insert({
+            "project": target_project,
+            "prompt": "[DÉCISION STRATÉGIQUE DG]",
+            "response": decision_summary
+        }).execute()
+        return json.dumps({"status": "success", "message": "Décision enregistrée avec succès."})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+AVAILABLE_TOOLS = {
+    "search_web": search_web,
+    "query_missions_history": query_missions_history,
+    "record_enterprise_decision": record_enterprise_decision
+}
+
+GROQ_TOOLS_SCHEMA = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_web",
+            "description": "OBLIGATOIRE pour toute question sur l'actualité, les lois, les faits réels ou les données changeantes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "La requête de recherche claire et optimisée."
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_missions_history",
+            "description": "Consulte l'historique interne des projets de l'entreprise.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_name": {
+                        "type": ["string", "null"],
+                        "description": "Nom spécifique du projet ou laisser vide."
+                    }
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "record_enterprise_decision",
+            "description": "Enregistre une décision stratégique ou une note de gouvernance officielle.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "decision_summary": {
+                        "type": "string",
+                        "description": "Le résumé clair et concis de la décision prise."
+                    },
+                    "project_name": {
+                        "type": ["string", "null"],
+                        "description": "Le projet concerné par la décision."
+                    }
+                },
+                "required": ["decision_summary"]
+            }
+        }
+    }
+]
+
 def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
     if not groq_client or not slack_client:
         return
@@ -21,24 +185,21 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
 
     try:
         model_name = "openai/gpt-oss-120b"
-        max_turns = 3
-        response_message = None
 
-        for _ in range(max_turns):
-            completion = groq_client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                tools=GROQ_TOOLS_SCHEMA,
-                tool_choice="auto",
-                temperature=0.1
-            )
-            
-            response_message = completion.choices[0].message
-            messages.append(response_message)
+        # 1. Appel initial avec outils activés
+        completion = groq_client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            tools=GROQ_TOOLS_SCHEMA,
+            tool_choice="auto",
+            temperature=0.1
+        )
+        
+        response_message = completion.choices[0].message
+        messages.append(response_message)
 
-            if not response_message.tool_calls:
-                break
-
+        # 2. Exécution de l'outil si demandé en un tour unique
+        if response_message.tool_calls:
             for tool_call in response_message.tool_calls:
                 tool_name = tool_call.function.name
                 raw_args = json.loads(tool_call.function.arguments or "{}")
@@ -58,18 +219,18 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
                     "name": tool_name,
                     "content": tool_output
                 })
-        else:
-            # Appel de secours sans aucun schéma d'outil pour garantir l'absence de conflit de contrainte
-            fallback_completion = groq_client.chat.completions.create(
+
+            # Appel final SANS AUCUN OUTIL pour rédiger le texte brut final
+            final_completion = groq_client.chat.completions.create(
                 model=model_name,
                 messages=messages,
                 temperature=0.1
             )
-            response_message = fallback_completion.choices[0].message
-            messages.append(response_message)
+            draft_response = final_completion.choices[0].message.content.strip()
+        else:
+            draft_response = response_message.content.strip() if response_message.content else "Directive exécutée."
 
-        draft_response = response_message.content.strip() if response_message and response_message.content else "Directive exécutée."
-
+        # 3. Étape d'audit interne
         audit_prompt = (
             "Agis en tant que Contrôleur Interne de Gouvernance et d'Audit des Risques pour le DG. "
             "Examine rigoureusement le brouillon de réponse ci-dessous par rapport aux consignes de zéro tolérance aux hallucinations et aux faits bruts récupérés.\n\n"
@@ -120,3 +281,38 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
             )
         except:
             pass
+
+@app.get("/")
+def read_root():
+    return {"status": "Enterprise DG Senior Engine is operational"}
+
+@app.post("/slack/events")
+async def slack_events(request: Request, background_tasks: BackgroundTasks):
+    try:
+        data = await request.json()
+    except Exception:
+        return {"status": "error", "message": "Invalid JSON"}
+
+    if data.get("type") == "url_verification":
+        return {"challenge": data.get("challenge")}
+
+    event = data.get("event", {})
+    if event.get("bot_id") or event.get("subtype") == "bot_message":
+        return {"status": "ok"}
+
+    event_type = event.get("type")
+    channel_type = event.get("channel_type")
+    
+    is_mention = (event_type == "app_mention")
+    is_dm = (event_type == "message" and channel_type == "im")
+    is_channel_msg = (event_type == "message" and channel_type in ["channel", "group"])
+
+    if is_mention or is_dm or is_channel_msg:
+        channel_id = event.get("channel")
+        user_text = event.get("text")
+        
+        if user_text and channel_id:
+            user_text = re.sub(r"<@U[A-Z0-9]+>", "", user_text).strip()
+            background_tasks.add_task(process_dg_mission, channel_id, channel_type, user_text)
+            
+    return {"status": "ok"}
