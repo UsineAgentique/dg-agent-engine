@@ -3,3 +3,4 @@ uvicorn
 slack-sdk
 groq
 supabase
+e2b-code-interpreter
