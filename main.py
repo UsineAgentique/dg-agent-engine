@@ -209,9 +209,10 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
     CONTEXTE DE L'ENTREPRISE :\n{enterprise_portfolio}
     DOCTRINE DE GOUVERNANCE :
     1. Si une information dépend du monde réel ou de l'actualité, appelle l'outil search_web.
-    2. RÈGLE ABSOLUE : Dès qu'une directive implique d'exécuter du code ou de tester un script, tu AS L'INTERDICTION de rédiger ou simuler le code toi-même. Tu DOIS impérativement et obligatoirement appeler l'outil execute_code_sandbox et attendre son retour brut.
-    3. Si tu dois valider ou retenir une orientation majeure, appelle record_enterprise_decision.
-    4. Ton ton est direct, professionnel, analytique et irréprochable.
+    2. RÈGLE ABSOLUE : Dès qu'une directive implique d'exécuter du code ou de tester un script, tu AS L'INTERDICTION de rédiger ou simuler le code toi-même. Tu DOIS impérativement et obligatoirement appeler l'outil execute_code_sandbox.
+    3. Après avoir reçu le résultat de l'exécution de l'outil, tu DOIS obligatoirement rédiger une réponse textuelle claire à l'utilisateur affichant le résultat obtenu.
+    4. Si tu dois valider ou retenir une orientation majeure, appelle record_enterprise_decision.
+    5. Ton ton est direct, professionnel, analytique et irréprochable.
     """
     
     messages = [
@@ -221,7 +222,7 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
     
     try:
         model_name = "openai/gpt-oss-120b"
-        draft_response = "Directive exécutée avec succès."
+        draft_response = "Exécution réalisée, aucun retour textuel du modèle."
         max_turns = 4
         
         for _ in range(max_turns):
@@ -235,6 +236,9 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
             
             response_message = completion.choices[0].message
             messages.append(response_message)
+            
+            if response_message.content:
+                draft_response = response_message.content.strip()
             
             if response_message.tool_calls:
                 for tool_call in response_message.tool_calls:
@@ -257,8 +261,6 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
                         "content": tool_output
                     })
             else:
-                if response_message.content:
-                    draft_response = response_message.content.strip()
                 break
                 
         if supabase:
