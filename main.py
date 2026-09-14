@@ -1,190 +1,94 @@
 import os
 import json
-import urllib.request
-import threading
-import time
-import re
-from fastapi import FastAPI, Request, BackgroundTasks
-from slack_sdk import WebClient
+from fastapi import FastAPI, Request, HTTPException
 from groq import Groq
 from supabase import create_client, Client
+from firecrawl import FirecrawlApp
+from e2b_code_interpreter import Sandbox
 
 app = FastAPI()
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY else None
+# Initialisation des clients et variables d'environnement
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
+E2B_API_KEY = os.getenv("E2B_API_KEY") # Utilisé automatiquement par le SDK si défini
 
-groq_api_key = os.environ.get("GROQ_API_KEY")
-groq_client = Groq(api_key=groq_api_key) if groq_api_key else None
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+groq_client = Groq(api_key=GROQ_API_KEY)
+firecrawl_app = FirecrawlApp(api_key=FIRECRAWL_API_KEY) if FIRECRAWL_API_KEY else None
 
-slack_token = os.environ.get("SLACK_BOT_TOKEN")
-slack_client = WebClient(token=slack_token) if slack_token else None
+# --- OUTILS DU DG ---
 
-def keep_alive():
-    app_url = os.environ.get("RENDER_EXTERNAL_URL", "https://dg-agent-engine.onrender.com")
-    while True:
-        try:
-            urllib.request.urlopen(app_url, timeout=10)
-        except Exception:
-            pass
-        time.sleep(600)
-
-@app.on_event("startup")
-def startup_event():
-    thread = threading.Thread(target=keep_alive, daemon=True)
-    thread.start()
-
-def get_enterprise_context() -> str:
-    if not supabase:
-        return "Aucun projet enregistré (Base de données indisponible)."
+def record_enterprise_decision(decision_summary: str = "Résumé non spécifié", project_name: str = "DG-AGENT-CORE", **kwargs):
+    """Enregistre une décision d'entreprise ou une note de gouvernance dans Supabase."""
     try:
-        res = supabase.table("projects").select("project_name, channel_id").execute()
-        if res.data:
-            projects = [f"- {p['project_name']} (Canal: {p['channel_id']})" for p in res.data]
-            return "Portfolio actif des projets de l'entreprise:\n" + "\n".join(projects)
-        return "Aucun projet actif enregistré pour le moment."
+        data = {
+            "decision_summary": decision_summary,
+            "project": project_name,
+            "details": kwargs.get("details", "")
+        }
+        response = supabase.table("missions_log").insert(data).execute()
+        return {"status": "success", "data": response.data}
     except Exception as e:
-        return f"Erreur récupération projets: {str(e)}"
+        return {"status": "error", "message": str(e)}
 
-def search_web(query: str) -> str:
-    """Recherche des informations actualisées, scores, faits ou actualités sur le web."""
-    tavily_key = os.environ.get("TAVILY_API_KEY")
-    if not tavily_key:
-        return json.dumps({"error": "TAVILY_API_KEY non configurée."}, ensure_ascii=False)
-    
-    url = "https://api.tavily.com/search"
-    payload = {
-        "api_key": tavily_key,
-        "query": query,
-        "max_results": 3,
-        "search_depth": "advanced"
-    }
+def firecrawl_scrape_url(url: str):
+    """Scrape le contenu textuel d'une page web via Firecrawl."""
+    if not firecrawl_app:
+        return {"status": "error", "message": "Firecrawl API key non configurée."}
     try:
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=10) as response:
-            res_data = json.loads(response.read().decode("utf-8"))
-            results = res_data.get("results", [])
-            formatted = [{"title": r.get("title"), "content": r.get("content"), "url": r.get("url")} for r in results]
-            return json.dumps(formatted, ensure_ascii=False)
+        scrape_result = firecrawl_app.scrape_url(url, params={'formats': ['markdown']})
+        return {"status": "success", "data": scrape_result.get("markdown", "Aucun contenu extrait")}
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return {"status": "error", "message": str(e)}
 
-def scrape_web_firecrawl(url: str) -> str:
-    """Aspire, extrait et structure le contenu textuel complet d'une page web spécifique via Firecrawl."""
-    firecrawl_key = os.environ.get("FIRECRAWL_API_KEY")
-    if not firecrawl_key:
-        return json.dumps({"error": "FIRECRAWL_API_KEY non configurée."}, ensure_ascii=False)
-    
-    api_url = "https://api.firecrawl.dev/v1/scrape"
-    payload = {
-        "url": url,
-        "formats": ["markdown"]
-    }
+def e2b_code_execution(code: str):
+    """Exécute du code Python de manière sécurisée dans un bac à sable E2B."""
     try:
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            api_url, 
-            data=data, 
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {firecrawl_key}"
-            }, 
-            method="POST"
-        )
-        with urllib.request.urlopen(req, timeout=20) as response:
-            res_data = json.loads(response.read().decode("utf-8"))
-            data_obj = res_data.get("data", {})
-            markdown_content = data_obj.get("markdown") or res_data.get("markdown") or str(res_data)
-            return json.dumps({"url": url, "content": markdown_content[:10000]}, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-def execute_code_sandbox(code: str) -> str:
-    """Exécute du code Python dans un sandbox E2B isolé pour tester des scripts, parser des données ou automatiser des tâches techniques."""
-    e2b_key = os.environ.get("E2B_API_KEY")
-    if not e2b_key:
-        return json.dumps({"error": "E2B_API_KEY non configurée."}, ensure_ascii=False)
-    try:
-        from e2b_code_interpreter import Sandbox
         with Sandbox() as sandbox:
             execution = sandbox.run_code(code)
-            result = {
-                "stdout": execution.logs.stdout,
-                "stderr": execution.logs.stderr,
+            return {
+                "status": "success",
+                "logs": execution.logs,
                 "error": str(execution.error) if execution.error else None
             }
-            return json.dumps(result, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return {"status": "error", "message": str(e)}
 
-def query_missions_history(project_name: str = None) -> str:
-    """Consulte l'historique interne des discussions et tâches des projets de l'entreprise."""
-    if not supabase:
-        return json.dumps({"error": "Base de données non disponible."}, ensure_ascii=False)
-    try:
-        query_builder = supabase.table("missions_log").select("project, prompt, response, created_at")
-        if project_name and project_name.lower() != "global":
-            query_builder = query_builder.eq("project", project_name)
-        res = query_builder.order("created_at", desc=True).limit(5).execute()
-        return json.dumps(res.data, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-def record_enterprise_decision(decision_summary: str, project_name: str = None) -> str:
-    """Enregistre officiellement une décision stratégique ou une note de gouvernance officielle."""
-    if not supabase:
-        return json.dumps({"error": "Base de données non disponible."}, ensure_ascii=False)
-    target_project = project_name if project_name else "Direction Générale - Entreprise"
-    try:
-        supabase.table("missions_log").insert({
-            "project": target_project,
-            "prompt": "[DÉCISION STRATÉGIQUE DG]",
-            "response": decision_summary
-        }).execute()
-        return json.dumps({"status": "success", "message": "Décision enregistrée avec succès dans Supabase."}, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-AVAILABLE_TOOLS = {
-    "search_web": search_web,
-    "scrape_web_firecrawl": scrape_web_firecrawl,
-    "query_missions_history": query_missions_history,
+tools_registry = {
     "record_enterprise_decision": record_enterprise_decision,
-    "execute_code_sandbox": execute_code_sandbox
+    "firecrawl_scrape_url": firecrawl_scrape_url,
+    "e2b_code_execution": e2b_code_execution
 }
 
-GROQ_TOOLS_SCHEMA = [
+# Définition des schémas d'outils pour Groq
+tools_definition = [
     {
         "type": "function",
         "function": {
-            "name": "search_web",
-            "description": "OBLIGATOIRE pour toute question sur l'actualité, les lois, les faits réels ou les données du web.",
+            "name": "record_enterprise_decision",
+            "description": "Enregistre une note de gouvernance ou un résumé technique dans Supabase.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "La requête de recherche claire et optimisée."
-                    }
+                    "decision_summary": {"type": "string", "description": "Résumé de la décision ou du livrable."},
+                    "project_name": {"type": "string", "description": "Nom du projet associé."}
                 },
-                "required": ["query"]
+                "required": ["decision_summary"]
             }
         }
     },
     {
         "type": "function",
         "function": {
-            "name": "scrape_web_firecrawl",
-            "description": "Aspire et extrait proprement le contenu textuel d'une URL web spécifique au format markdown pour analyse approfondie.",
+            "name": "firecrawl_scrape_url",
+            "description": "Scrape une page web pour en extraire le contenu textuel.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "L'URL exacte de la page web à aspirer."
-                    }
+                    "url": {"type": "string", "description": "URL de la page à analyser."}
                 },
                 "required": ["url"]
             }
@@ -193,196 +97,84 @@ GROQ_TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
-            "name": "execute_code_sandbox",
-            "description": "Exécute du code Python dans un sandbox E2B sécurisé pour tester des scripts, parser des données ou exécuter des tâches techniques.",
+            "name": "e2b_code_execution",
+            "description": "Exécute du code Python dans un environnement sandbox sécurisé E2B.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "code": {
-                        "type": "string",
-                        "description": "Le code Python valide à exécuter dans le sandbox."
-                    }
+                    "code": {"type": "string", "description": "Code Python à exécuter."}
                 },
                 "required": ["code"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "query_missions_history",
-            "description": "Consulte l'historique interne des projets de l'entreprise.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "project_name": {
-                        "type": ["string", "null"],
-                        "description": "Nom spécifique du projet ou laisser vide."
-                    }
-                }
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "record_enterprise_decision",
-            "description": "Enregistre une décision stratégique ou une note de gouvernance officielle.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "decision_summary": {
-                        "type": "string",
-                        "description": "Le résumé clair et concis de la décision prise."
-                    },
-                    "project_name": {
-                        "type": ["string", "null"],
-                        "description": "Le projet concerné par la décision."
-                    }
-                },
-                "required": ["decision_summary"]
             }
         }
     }
 ]
 
-def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
-    if not groq_client or not slack_client:
-        return
+@app.post("/slack/events")
+async def slack_events(request: Request):
+    body = await request.json()
     
-    enterprise_portfolio = get_enterprise_context()
-    system_prompt = f"""
-    Tu es le Directeur Général (DG) de l'entreprise. Tu pilotes l'ensemble des projets,
-    coordonnes les activités et garantis une rigueur opérationnelle absolue.
-    CONTEXTE DE L'ENTREPRISE :\n{enterprise_portfolio}
-    DOCTRINE DE GOUVERNANCE :
-    1. Si une information dépend du monde réel ou de l'actualité, appelle l'outil search_web.
-    2. Pour aspirer ou extraire en profondeur le contenu textuel d'une URL web spécifique, utilise l'outil scrape_web_firecrawl.
-    3. RÈGLE ABSOLUE : Dès qu'une directive implique d'exécuter du code ou de tester un script, tu AS L'INTERDICTION de rédiger ou simuler le code toi-même. Tu DOIS impérativement et obligatoirement appeler l'outil execute_code_sandbox.
-    4. Dès que tu obtiens des résultats d'outils (comme le contenu d'une page web ou un résultat d'exécution), tu DOIS exploiter ces données pour rédiger une réponse claire, détaillée et structurée pour l'utilisateur.
-    5. Si tu dois valider ou retenir une orientation majeure, appelle record_enterprise_decision.
-    6. Ton ton est direct, professionnel, analytique et irréprochable.
-    """
+    if "challenge" in body:
+        return {"challenge": body["challenge"]}
     
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_text}
-    ]
-    
-    try:
-        model_name = "openai/gpt-oss-120b"
-        draft_response = "Analyse effectuée, aucun retour textuel généré."
-        max_turns = 5
+    event = body.get("event", {})
+    if event.get("type") == "message" and not event.get("bot_id"):
+        user_prompt = event.get("text")
         
-        for _ in range(max_turns):
-            completion = groq_client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                tools=GROQ_TOOLS_SCHEMA,
-                tool_choice="auto",
-                temperature=0.1
-            )
-            
-            response_message = completion.choices[0].message
-            messages.append(response_message)
-            
-            if response_message.content:
-                draft_response = response_message.content.strip()
-            
-            if response_message.tool_calls:
-                for tool_call in response_message.tool_calls:
-                    tool_name = tool_call.function.name
-                    raw_args = json.loads(tool_call.function.arguments or "{}")
-                    clean_args = {k: v for k, v in raw_args.items() if v is not None}
-                    
-                    if tool_name in AVAILABLE_TOOLS:
-                        try:
-                            tool_output = AVAILABLE_TOOLS[tool_name](**clean_args)
-                        except Exception as tool_err:
-                            tool_output = json.dumps({"error": str(tool_err)}, ensure_ascii=False)
-                    else:
-                        tool_output = json.dumps({"error": "Outil inconnu"}, ensure_ascii=False)
-                        
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "name": tool_name,
-                        "content": tool_output
-                    })
-            else:
-                break
+        messages = [
+            {
+                "role": "system", 
+                "content": (
+                    "Tu es l'agent exécutif DG (Direction Générale). "
+                    "Tu analyses les consignes, utilises les outils à ta disposition (Firecrawl, E2B, Supabase) "
+                    "et appliques la doctrine Plan-Execute-Reflect. "
+                    "Mécanisme anti-silence obligatoire : si tu exécutes des outils, tu dois impérativement "
+                    "synthétiser un rapport final clair et détaillé pour l'utilisateur à la fin."
+                )
+            },
+            {"role": "user", "content": user_prompt}
+        ]
         
-        # Sécurité anti-silence : si le modèle a fini ses outils sans formuler de texte final
-        if not draft_response or draft_response == "Analyse effectuée, aucun retour textuel généré.":
-            messages.append({
-                "role": "user",
-                "content": "Fournis maintenant ta réponse finale détaillée et structurée à l'utilisateur en te basant sur tous les résultats d'outils obtenus."
-            })
-            final_completion = groq_client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                temperature=0.1
-            )
-            if final_completion.choices[0].message.content:
-                draft_response = final_completion.choices[0].message.content.strip()
-                
-        if supabase:
-            try:
-                supabase.table("missions_log").insert({
-                    "project": "Direction Générale - Entreprise",
-                    "prompt": user_text,
-                    "response": draft_response
-                }).execute()
-            except Exception as e:
-                print(f"Erreur Supabase log: {str(e)}")
-                
-        slack_client.chat_postMessage(
-            channel=channel_id,
-            text=draft_response
-        )
-        
-    except Exception as e:
-        error_msg = f"⚠️ Incident critique de gouvernance : {str(e)}"
-        print(error_msg)
         try:
-            slack_client.chat_postMessage(
-                channel=channel_id,
-                text=error_msg
-            )
-        except:
-            pass
+            # Boucle d'exécution multi-tours pour gérer les appels d'outils successifs
+            for _ in range(5):
+                completion = groq_client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=messages,
+                    tools=tools_definition,
+                    tool_choice="auto"
+                )
+                
+                response_message = completion.choices[0].message
+                messages.append(response_message)
+                
+                if response_message.tool_calls:
+                    for tool_call in response_message.tool_calls:
+                        function_name = tool_call.function.name
+                        function_args = json.loads(tool_call.function.arguments)
+                        
+                        if function_name in tools_registry:
+                            tool_result = tools_registry[function_name](**function_args)
+                        else:
+                            tool_result = {"status": "error", "message": f"Outil {function_name} inconnu."}
+                        
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": function_name,
+                            "content": json.dumps(tool_result)
+                        })
+                else:
+                    # Si aucun nouvel appel d'outil n'est requis, on retourne la réponse finale (Anti-silence validé)
+                    return {"status": "success", "response": response_message.content}
+            
+            return {"status": "success", "response": "Mission exécutée avec succès (limite d'itérations atteinte)."}
+            
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+            
+    return {"status": "ignored"}
 
 @app.get("/")
-def read_root():
-    return {"status": "Enterprise DG Senior Engine is operational (Search, Firecrawl, E2B & Supabase)"}
-
-@app.post("/slack/events")
-async def slack_events(request: Request, background_tasks: BackgroundTasks):
-    try:
-        data = await request.json()
-    except Exception:
-        return {"status": "error", "message": "Invalid JSON"}
-        
-    if data.get("type") == "url_verification":
-        return {"challenge": data.get("challenge")}
-        
-    event = data.get("event", {})
-    if event.get("bot_id") or event.get("subtype") == "bot_message":
-        return {"status": "ok"}
-        
-    event_type = event.get("type")
-    channel_type = event.get("channel_type")
-    
-    is_mention = (event_type == "app_mention")
-    is_dm = (event_type == "message" and channel_type == "im")
-    is_channel_msg = (event_type == "message" and channel_type in ["channel", "group"])
-    
-    if is_mention or is_dm or is_channel_msg:
-        channel_id = event.get("channel")
-        user_text = event.get("text", "")
-        
-        if user_text and channel_id:
-            user_text = re.sub(r"<@U[A-Z0-9]+>", "", user_text).strip()
-            background_tasks.add_task(process_dg_mission, channel_id, channel_type, user_text)
-            
-    return {"status": "ok"}
+def health_check():
+    return {"status": "healthy", "service": "DG-AGENT-CORE"}
