@@ -71,6 +71,36 @@ def search_web(query: str) -> str:
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
+def scrape_web_firecrawl(url: str) -> str:
+    """Aspire, extrait et structure le contenu textuel complet d'une page web spécifique via Firecrawl."""
+    firecrawl_key = os.environ.get("FIRECRAWL_API_KEY")
+    if not firecrawl_key:
+        return json.dumps({"error": "FIRECRAWL_API_KEY non configurée."}, ensure_ascii=False)
+    
+    api_url = "https://api.firecrawl.dev/v1/scrape"
+    payload = {
+        "url": url,
+        "formats": ["markdown"]
+    }
+    try:
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            api_url, 
+            data=data, 
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {firecrawl_key}"
+            }, 
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=20) as response:
+            res_data = json.loads(response.read().decode("utf-8"))
+            data_obj = res_data.get("data", {})
+            markdown_content = data_obj.get("markdown") or res_data.get("markdown") or str(res_data)
+            return json.dumps({"url": url, "content": markdown_content[:10000]}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
 def execute_code_sandbox(code: str) -> str:
     """Exécute du code Python dans un sandbox E2B isolé pour tester des scripts, parser des données ou automatiser des tâches techniques."""
     e2b_key = os.environ.get("E2B_API_KEY")
@@ -119,6 +149,7 @@ def record_enterprise_decision(decision_summary: str, project_name: str = None) 
 
 AVAILABLE_TOOLS = {
     "search_web": search_web,
+    "scrape_web_firecrawl": scrape_web_firecrawl,
     "query_missions_history": query_missions_history,
     "record_enterprise_decision": record_enterprise_decision,
     "execute_code_sandbox": execute_code_sandbox
@@ -139,6 +170,23 @@ GROQ_TOOLS_SCHEMA = [
                     }
                 },
                 "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scrape_web_firecrawl",
+            "description": "Aspire et extrait proprement le contenu textuel d'une URL web spécifique au format markdown pour analyse approfondie.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "L'URL exacte de la page web à aspirer."
+                    }
+                },
+                "required": ["url"]
             }
         }
     },
@@ -209,10 +257,11 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
     CONTEXTE DE L'ENTREPRISE :\n{enterprise_portfolio}
     DOCTRINE DE GOUVERNANCE :
     1. Si une information dépend du monde réel ou de l'actualité, appelle l'outil search_web.
-    2. RÈGLE ABSOLUE : Dès qu'une directive implique d'exécuter du code ou de tester un script, tu AS L'INTERDICTION de rédiger ou simuler le code toi-même. Tu DOIS impérativement et obligatoirement appeler l'outil execute_code_sandbox.
-    3. Après avoir reçu le résultat de l'exécution de l'outil, tu DOIS obligatoirement rédiger une réponse textuelle claire à l'utilisateur affichant le résultat obtenu.
-    4. Si tu dois valider ou retenir une orientation majeure, appelle record_enterprise_decision.
-    5. Ton ton est direct, professionnel, analytique et irréprochable.
+    2. Pour aspirer ou extraire en profondeur le contenu textuel d'une URL web spécifique, utilise l'outil scrape_web_firecrawl.
+    3. RÈGLE ABSOLUE : Dès qu'une directive implique d'exécuter du code ou de tester un script, tu AS L'INTERDICTION de rédiger ou simuler le code toi-même. Tu DOIS impérativement et obligatoirement appeler l'outil execute_code_sandbox.
+    4. Après avoir reçu le résultat de l'exécution d'un outil, tu DOIS obligatoirement rédiger une réponse textuelle claire à l'utilisateur affichant le résultat obtenu.
+    5. Si tu dois valider ou retenir une orientation majeure, appelle record_enterprise_decision.
+    6. Ton ton est direct, professionnel, analytique et irréprochable.
     """
     
     messages = [
@@ -291,7 +340,7 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
 
 @app.get("/")
 def read_root():
-    return {"status": "Enterprise DG Senior Engine is operational (Multi-turn Loop & E2B Sandbox)"}
+    return {"status": "Enterprise DG Senior Engine is operational (Search, Firecrawl, E2B & Supabase)"}
 
 @app.post("/slack/events")
 async def slack_events(request: Request, background_tasks: BackgroundTasks):
