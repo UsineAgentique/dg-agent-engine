@@ -259,7 +259,7 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
     1. Si une information dépend du monde réel ou de l'actualité, appelle l'outil search_web.
     2. Pour aspirer ou extraire en profondeur le contenu textuel d'une URL web spécifique, utilise l'outil scrape_web_firecrawl.
     3. RÈGLE ABSOLUE : Dès qu'une directive implique d'exécuter du code ou de tester un script, tu AS L'INTERDICTION de rédiger ou simuler le code toi-même. Tu DOIS impérativement et obligatoirement appeler l'outil execute_code_sandbox.
-    4. Après avoir reçu le résultat de l'exécution d'un outil, tu DOIS obligatoirement rédiger une réponse textuelle claire à l'utilisateur affichant le résultat obtenu.
+    4. Dès que tu obtiens des résultats d'outils (comme le contenu d'une page web ou un résultat d'exécution), tu DOIS exploiter ces données pour rédiger une réponse claire, détaillée et structurée pour l'utilisateur.
     5. Si tu dois valider ou retenir une orientation majeure, appelle record_enterprise_decision.
     6. Ton ton est direct, professionnel, analytique et irréprochable.
     """
@@ -271,8 +271,8 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
     
     try:
         model_name = "openai/gpt-oss-120b"
-        draft_response = "Exécution réalisée, aucun retour textuel du modèle."
-        max_turns = 4
+        draft_response = "Analyse effectuée, aucun retour textuel généré."
+        max_turns = 5
         
         for _ in range(max_turns):
             completion = groq_client.chat.completions.create(
@@ -311,6 +311,20 @@ def process_dg_mission(channel_id: str, channel_type: str, user_text: str):
                     })
             else:
                 break
+        
+        # Sécurité anti-silence : si le modèle a fini ses outils sans formuler de texte final
+        if not draft_response or draft_response == "Analyse effectuée, aucun retour textuel généré.":
+            messages.append({
+                "role": "user",
+                "content": "Fournis maintenant ta réponse finale détaillée et structurée à l'utilisateur en te basant sur tous les résultats d'outils obtenus."
+            })
+            final_completion = groq_client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=0.1
+            )
+            if final_completion.choices[0].message.content:
+                draft_response = final_completion.choices[0].message.content.strip()
                 
         if supabase:
             try:
