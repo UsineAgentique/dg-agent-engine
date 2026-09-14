@@ -78,7 +78,7 @@ def execute_code_sandbox(code: str) -> str:
         return json.dumps({"error": "E2B_API_KEY non configurée."}, ensure_ascii=False)
     try:
         from e2b_code_interpreter import Sandbox
-        with Sandbox(api_key=e2b_key) as sandbox:
+        with Sandbox() as sandbox:
             execution = sandbox.run_code(code)
             result = {
                 "stdout": execution.logs.stdout,
