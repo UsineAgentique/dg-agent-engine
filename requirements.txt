@@ -1,6 +1,7 @@
 fastapi
 uvicorn
-slack-sdk
 groq
 supabase
-e2b-code-interpreter
+firecrawl-py
+e2b_code_interpreter
+pydantic
