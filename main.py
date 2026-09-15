@@ -140,7 +140,10 @@ async def slack_events(request: Request):
         return {"challenge": body["challenge"]}
     
     event = body.get("event", {})
-    if event.get("type") == "message" and not event.get("bot_id"):
+    event_type = event.get("type")
+    
+    # Prise en charge des messages directs et des mentions de bot (@Amal-DG)
+    if event_type in ["message", "app_mention"] and not event.get("bot_id"):
         user_prompt = event.get("text")
         channel_id = event.get("channel")
         
