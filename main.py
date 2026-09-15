@@ -110,7 +110,7 @@ async def slack_events(request: Request):
                         tool_function = available_tools[function_name]
                         tool_output = tool_function(**function_args)
                     else:
-                        tool_output = fErreur : Outil {function_name} inconnu."
+                        tool_output = f"Erreur : Outil {function_name} inconnu."
 
                     # Ajout du retour de l'outil dans l'historique des messages
                     messages.append({
