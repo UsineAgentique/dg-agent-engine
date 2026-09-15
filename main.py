@@ -38,7 +38,7 @@ def send_slack_message(channel: str, text: str):
     except Exception as e:
         print(f"Erreur API Slack: {e}")
 
-# --- OUTILS DU DG (Sécurisés avec valeurs par défaut) ---
+# --- OUTILS DU DG ---
 
 def record_enterprise_decision(decision_summary: str = "Résumé non spécifié", project_name: str = "DG-AGENT-CORE", **kwargs):
     """Enregistre une note de gouvernance ou un résumé technique dans Supabase."""
@@ -135,14 +135,12 @@ tools_definition = [
 async def slack_events(request: Request):
     body = await request.json()
     
-    # Gestion du challenge de configuration Slack
     if "challenge" in body:
         return {"challenge": body["challenge"]}
     
     event = body.get("event", {})
     event_type = event.get("type")
     
-    # Prise en charge des messages directs et des mentions de bot (@Amal-DG)
     if event_type in ["message", "app_mention"] and not event.get("bot_id"):
         user_prompt = event.get("text")
         channel_id = event.get("channel")
@@ -162,10 +160,9 @@ async def slack_events(request: Request):
         ]
         
         try:
-            # Boucle d'exécution multi-tours (maximum 5 itérations d'outils)
             for _ in range(5):
                 completion = groq_client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
+                    model="openai/gpt-oss-120b",
                     messages=messages,
                     tools=tools_definition,
                     tool_choice="auto"
@@ -198,7 +195,6 @@ async def slack_events(request: Request):
                     send_slack_message(channel_id, final_text)
                     return {"status": "success"}
             
-            # Sécurité si la limite d'itérations est atteinte sans réponse textuelle finale
             fallback_text = "Mission exécutée (limite d'itérations atteinte)."
             send_slack_message(channel_id, fallback_text)
             return {"status": "success"}
