@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import requests
 from pathlib import Path
 from typing import TypedDict, List, Any
@@ -10,7 +11,7 @@ from supabase import create_client, Client
 from langgraph.graph import StateGraph, END
 
 # --- 1. INITIALISATION DES CLIENTS & CONFIGURATION ---
-app = FastAPI(title="DG-Core Agentic Architecture", version="2.16-LangGraph-FinalFix")
+app = FastAPI(title="DG-Core Agentic Architecture", version="2.17-LangGraph-AntiRateLimit")
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -186,15 +187,27 @@ def prepare_messages_for_groq(messages):
 
 def call_model(state: AgentState):
     payload_messages = prepare_messages_for_groq(state["messages"])
-    response = groq_client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=payload_messages,
-        tools=tools_definitions,
-        tool_choice="auto",
-        temperature=0.5
-    )
-    response_message = response.choices[0].message
-    return {"messages": state["messages"] + [response_message]}
+    max_retries = 3
+    retry_delay = 4 # secondes d'attente si rate limit atteint
+    
+    for attempt in range(max_retries):
+        try:
+            response = groq_client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=payload_messages,
+                tools=tools_definitions,
+                tool_choice="auto",
+                temperature=0.5
+            )
+            response_message = response.choices[0].message
+            return {"messages": state["messages"] + [response_message]}
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "rate_limit" in error_str.lower():
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    continue
+            raise e
 
 def call_tools(state: AgentState):
     messages = state["messages"]
@@ -259,7 +272,7 @@ def process_slack_workflow(user_prompt: str, channel_id: str):
                 final_answer = msg.get("content")
                 break
     except Exception as e:
-        final_answer = f"Erreur critique dans le graphe LangGraph : {str(e)}"
+        final_answer = f"Erreur de quota / taux (Rate Limit Groq) : {str(e)}. Réessaie dans quelques secondes."
             
     post_to_slack(channel_id, final_answer)
 
