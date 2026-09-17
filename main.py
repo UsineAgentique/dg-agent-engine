@@ -10,7 +10,7 @@ from supabase import create_client, Client
 from langgraph.graph import StateGraph, END
 
 # --- 1. INITIALISATION DES CLIENTS & CONFIGURATION ---
-app = FastAPI(title="DG-Core Agentic Architecture", version="2.14-LangGraph-Fixed")
+app = FastAPI(title="DG-Core Agentic Architecture", version="2.15-LangGraph-Bulletproof")
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -51,28 +51,30 @@ def record_enterprise_decision(summary: str = None, decision_summary: str = None
     try:
         final_summary = summary or decision_summary or "Résumé non fourni"
         final_project = project or project_name or "Projet non spécifié"
+        final_details = details or final_summary
+        
         data = {
             "decision_summary": final_summary,
             "project": final_project,
-            "details": details or ""
+            "details": final_details
         }
         supabase.table("missions_log").insert(data).execute()
         return "Succès : Décision et rapport enregistrés dans Supabase (missions_log)."
     except Exception as e:
         return f"Erreur lors de l'enregistrement Supabase : {str(e)}"
 
-def save_business_playbook(project_name: str, business_model: str, target_market: str, constraints_and_rules: str, strategy_details: str) -> str:
+def save_business_playbook(project_name: str = None, business_model: str = None, target_market: str = None, constraints_and_rules: str = None, strategy_details: str = None) -> str:
     """Enregistre un nouveau playbook stratégique ou modèle de business dans Supabase business_playbooks."""
     try:
         data = {
-            "project_name": project_name,
-            "business_model": business_model,
-            "target_market": target_market,
-            "constraints_and_rules": constraints_and_rules,
-            "strategy_details": strategy_details
+            "project_name": project_name or "Projet non spécifié",
+            "business_model": business_model or "",
+            "target_market": target_market or "",
+            "constraints_and_rules": constraints_and_rules or "",
+            "strategy_details": strategy_details or ""
         }
         supabase.table("business_playbooks").insert(data).execute()
-        return f"Succès : Playbook stratégique pour '{project_name}' enregistré dans le Cerveau Business."
+        return f"Succès : Playbook stratégique enregistré dans le Cerveau Business."
     except Exception as e:
         return f"Erreur lors de l'enregistrement du playbook : {str(e)}"
 
@@ -98,9 +100,10 @@ tools_definitions = [
                     "summary": {"type": "string", "description": "Résumé clair de la décision ou de l'action."},
                     "decision_summary": {"type": "string", "description": "Autre variante du résumé de la décision."},
                     "project": {"type": "string", "description": "Nom du projet en cours."},
+                    "project_name": {"type": "string", "description": "Autre variante du nom du projet."},
                     "details": {"type": "string", "description": "Rapport détaillé ou étapes techniques réalisées."}
                 },
-                "required": ["project", "details"]
+                "required": []  # Aucun champ obligatoire pour bloquer l'API Groq
             }
         }
     },
@@ -118,7 +121,7 @@ tools_definitions = [
                     "constraints_and_rules": {"type": "string", "description": "Règles, limites ou contraintes strictes."},
                     "strategy_details": {"type": "string", "description": "Stratégie globale et leviers de croissance."}
                 },
-                "required": ["project_name", "business_model", "target_market", "constraints_and_rules", "strategy_details"]
+                "required": []
             }
         }
     },
@@ -132,7 +135,7 @@ tools_definitions = [
                 "properties": {
                     "project_name": {"type": "string", "description": "Nom du projet recherché."}
                 },
-                "required": ["project_name"]
+                "required": []
             }
         }
     }
