@@ -10,7 +10,7 @@ from supabase import create_client, Client
 from langgraph.graph import StateGraph, END
 
 # --- 1. INITIALISATION DES CLIENTS & CONFIGURATION ---
-app = FastAPI(title="DG-Core Agentic Architecture", version="2.11-LangGraph-Definitive")
+app = FastAPI(title="DG-Core Agentic Architecture", version="2.12-LangGraph-Bulletproof")
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -96,10 +96,11 @@ tools_definitions = [
                 "type": "object",
                 "properties": {
                     "summary": {"type": "string", "description": "Résumé clair de la décision ou de l'action."},
+                    "decision_summary": {"type": "string", "description": "Autre variante du résumé de la décision."},
                     "project": {"type": "string", "description": "Nom du projet en cours."},
                     "details": {"type": "string", "description": "Rapport détaillé ou étapes techniques réalisées."}
                 },
-                "required": ["summary", "project", "details"]
+                "required": ["project", "details"]  # <-- On retire summary/decision_summary de required pour stopper les erreurs 400
             }
         }
     },
