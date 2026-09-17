@@ -10,7 +10,7 @@ from supabase import create_client, Client
 from langgraph.graph import StateGraph, END
 
 # --- 1. INITIALISATION DES CLIENTS & CONFIGURATION ---
-app = FastAPI(title="DG-Core Agentic Architecture", version="2.7-LangGraph-Robust")
+app = FastAPI(title="DG-Core Agentic Architecture", version="2.8-LangGraph-Robust")
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -46,13 +46,15 @@ def load_system_prompt() -> str:
     return "Tu es l'agent exécutif DG par défaut."
 
 # --- 3. DÉFINITION DES OUTILS (TOOLS) ---
-def record_enterprise_decision(decision_summary: str, project: str, details: str) -> str:
+def record_enterprise_decision(decision_summary: str = None, summary: str = None, project: str = None, project_name: str = None, details: str = None) -> str:
     """Enregistre un rapport de mission ou une décision dans la table Supabase missions_log."""
     try:
+        final_summary = decision_summary or summary or "Résumé non fourni"
+        final_project = project or project_name or "Projet non spécifié"
         data = {
-            "decision_summary": decision_summary,
-            "project": project,
-            "details": details
+            "decision_summary": final_summary,
+            "project": final_project,
+            "details": details or ""
         }
         supabase.table("missions_log").insert(data).execute()
         return "Succès : Décision et rapport enregistrés dans Supabase (missions_log)."
@@ -210,6 +212,7 @@ def call_tools(state: AgentState):
             new_messages.append({
                 "tool_call_id": tool_call.id,
                 "role": "tool",
+                "name": function_name,
                 "content": str(output)
             })
             
