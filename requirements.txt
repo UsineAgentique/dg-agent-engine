@@ -5,3 +5,5 @@ supabase
 firecrawl-py
 e2b_code_interpreter
 pydantic
+langgraph
+langchain-core
