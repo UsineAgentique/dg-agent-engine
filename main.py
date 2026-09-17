@@ -10,7 +10,7 @@ from supabase import create_client, Client
 from langgraph.graph import StateGraph, END
 
 # --- 1. INITIALISATION DES CLIENTS & CONFIGURATION ---
-app = FastAPI(title="DG-Core Agentic Architecture", version="2.13-LangGraph-Async")
+app = FastAPI(title="DG-Core Agentic Architecture", version="2.14-LangGraph-Fixed")
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -271,12 +271,11 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
         return JSONResponse(content={"challenge": body["challenge"]})
     
     event = body.get("event", {})
-    if event.get("type"] == "app_mention" or (event.get("type"] == "message" and not event.get("bot_id") and not event.get("subtype")):
+    if event.get("type") == "app_mention" or (event.get("type") == "message" and not event.get("bot_id") and not event.get("subtype")):
         user_prompt = event.get("text")
         channel_id = event.get("channel")
         
         if user_prompt and channel_id:
-            # Réponse immédiate à Slack (< 0.1s) et traitement en arrière-plan
             background_tasks.add_task(process_slack_workflow, user_prompt, channel_id)
         
     return {"status": "ok"}
