@@ -243,7 +243,7 @@ async def slack_events(request: Request):
         return JSONResponse(content={"challenge": body["challenge"]})
     
     event = body.get("event", {})
-    if event.get("type") == "app_mention" or (event.get("type"] == "message" and not event.get("bot_id") and not event.get("subtype")):
+    if event.get("type") == "app_mention" or (event.get("type") == "message" and not event.get("bot_id") and not event.get("subtype")):
         user_prompt = event.get("text")
         channel_id = event.get("channel")
         
