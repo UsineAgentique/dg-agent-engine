@@ -8,11 +8,9 @@ from fastapi.responses import JSONResponse
 from groq import Groq
 from supabase import create_client, Client
 from langgraph.graph import StateGraph, END
-from langgraph.graph.message import add_messages
-from typing import Annotated
 
 # --- 1. INITIALISATION DES CLIENTS & CONFIGURATION ---
-app = FastAPI(title="DG-Core Agentic Architecture", version="2.5-LangGraph")
+app = FastAPI(title="DG-Core Agentic Architecture", version="2.7-LangGraph-Robust")
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -86,7 +84,6 @@ def get_business_playbook(project_name: str) -> str:
     except Exception as e:
         return f"Erreur lors de la récupération du playbook : {str(e)}"
 
-# Définition des schémas JSON pour les outils Groq
 tools_definitions = [
     {
         "type": "function",
@@ -144,27 +141,61 @@ available_tools = {
     "get_business_playbook": get_business_playbook,
 }
 
-# --- 4. CONFIGURATION LANGGRAPH (STATE & NODES) ---
+# --- 4. CONFIGURATION LANGGRAPH & NORMALISATION ---
 class AgentState(TypedDict):
-    messages: Annotated[List[Any], add_messages]
+    messages: List[Any]
     channel_id: str
 
+def prepare_messages_for_groq(messages):
+    """Convertit proprement l'historique en dictionnaires valides pour l'API Groq."""
+    clean_messages = []
+    for msg in messages:
+        if isinstance(msg, dict):
+            clean_msg = {
+                "role": msg.get("role"),
+                "content": msg.get("content")
+            }
+            if "tool_call_id" in msg:
+                clean_msg["tool_call_id"] = msg["tool_call_id"]
+            if "tool_calls" in msg:
+                clean_msg["tool_calls"] = msg["tool_calls"]
+            clean_messages.append({k: v for k, v in clean_msg.items() if v is not None})
+        else:
+            msg_dict = {
+                "role": getattr(msg, "role", "assistant"),
+                "content": getattr(msg, "content", None)
+            }
+            tool_calls = getattr(msg, "tool_calls", None)
+            if tool_calls:
+                msg_dict["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": tc.type,
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments
+                        }
+                    } for tc in tool_calls
+                ]
+            clean_messages.append({k: v for k, v in msg_dict.items() if v is not None})
+    return clean_messages
+
 def call_model(state: AgentState):
-    """Nœud : Appelle l'API Groq avec les outils disponibles."""
+    payload_messages = prepare_messages_for_groq(state["messages"])
     response = groq_client.chat.completions.create(
         model=MODEL_NAME,
-        messages=state["messages"],
+        messages=payload_messages,
         tools=tools_definitions,
         tool_choice="auto",
         temperature=0.5
     )
-    return {"messages": [response.choices[0].message]}
+    response_message = response.choices[0].message
+    return {"messages": state["messages"] + [response_message]}
 
 def call_tools(state: AgentState):
-    """Nœud : Exécute les outils demandés par le modèle."""
     messages = state["messages"]
     last_message = messages[-1]
-    tool_results = []
+    new_messages = list(messages)
     
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         for tool_call in last_message.tool_calls:
@@ -176,36 +207,26 @@ def call_tools(state: AgentState):
             else:
                 output = f"Erreur : Outil {function_name} inconnu."
                 
-            tool_results.append({
+            new_messages.append({
                 "tool_call_id": tool_call.id,
                 "role": "tool",
-                "name": function_name,
                 "content": str(output)
             })
             
-    return {"messages": tool_results}
+    return {"messages": new_messages}
 
 def should_continue(state: AgentState):
-    """Condition : Vérifie si le modèle veut encore appeler des outils."""
     last_message = state["messages"][-1]
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "continue"
     return "end"
 
-# Construction du Graphe
 workflow = StateGraph(AgentState)
 workflow.add_node("agent", call_model)
 workflow.add_node("tools", call_tools)
 
 workflow.set_entry_point("agent")
-workflow.add_conditional_edges(
-    "agent",
-    should_continue,
-    {
-        "continue": "tools",
-        "end": END
-    }
-)
+workflow.add_conditional_edges("agent", should_continue, {"continue": "tools", "end": END})
 workflow.add_edge("tools", "agent")
 
 compiled_graph = workflow.compile()
@@ -231,21 +252,22 @@ async def slack_events(request: Request):
             {"role": "user", "content": user_prompt}
         ]
         
-        # Exécution du graphe LangGraph
-        result = compiled_graph.invoke({
-            "messages": initial_messages,
-            "channel_id": channel_id
-        })
-        
-        # Extraction de la réponse finale de l'assistant
-        final_answer = "Mission exécutée avec succès."
-        for msg in reversed(result.get("messages", [])):
-            if hasattr(msg, "content") and msg.content and not getattr(msg, "tool_calls", None):
-                final_answer = msg.content
-                break
-            elif isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("content"):
-                final_answer = msg.get("content")
-                break
+        try:
+            result = compiled_graph.invoke({
+                "messages": initial_messages,
+                "channel_id": channel_id
+            })
+            
+            final_answer = "Mission exécutée avec succès."
+            for msg in reversed(result.get("messages", [])):
+                if hasattr(msg, "content") and msg.content and not getattr(msg, "tool_calls", None):
+                    final_answer = msg.content
+                    break
+                elif isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("content"):
+                    final_answer = msg.get("content")
+                    break
+        except Exception as e:
+            final_answer = f"Erreur critique dans le graphe LangGraph : {str(e)}"
                 
         post_to_slack(channel_id, final_answer)
         
