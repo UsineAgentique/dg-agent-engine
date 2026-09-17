@@ -11,7 +11,7 @@ from supabase import create_client, Client
 from langgraph.graph import StateGraph, END
 
 # --- 1. INITIALISATION DES CLIENTS & CONFIGURATION ---
-app = FastAPI(title="DG-Core Agentic Architecture", version="2.18-LangGraph-BulletproofLog")
+app = FastAPI(title="DG-Core Agentic Architecture", version="2.19-LangGraph-BulletproofFinal")
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -47,14 +47,15 @@ def load_system_prompt() -> str:
     return "Tu es l'agent exécutif DG par défaut."
 
 # --- 3. DÉFINITION DES OUTILS (TOOLS) ---
-def record_enterprise_decision(summary: str = None, decision_summary: str = None, project_name: str = None, project: str = None, details: str = None) -> str:
-    """Enregistre un rapport de mission ou une décision dans la table Supabase missions_log (sans dépendre d'une colonne de projet)."""
+def record_enterprise_decision(summary: str = None, decision_summary: str = None, project_name: str = None, project: str = None, details: str = None, **kwargs) -> str:
+    """Enregistre un rapport de mission ou une décision dans Supabase (100% tolérant aux variations d'arguments du LLM)."""
     try:
-        final_summary = summary or decision_summary or "Résumé non fourni"
-        final_project = project_name or project or "Projet non spécifié"
-        final_details = details or final_summary
+        # Récupération intelligente gérant toutes les variantes possibles envoyées par le modèle
+        final_summary = summary or decision_summary or kwargs.get("summary_text") or kwargs.get("text") or "Résumé non fourni"
+        final_project = project_name or project or kwargs.get("project_name_str") or "Projet non spécifié"
+        final_details = details or kwargs.get("description") or kwargs.get("detail") or final_summary
         
-        # On fusionne le projet dans les détails pour s'affranchir des erreurs de colonnes manquantes dans Supabase
+        # Fusion propre pour s'affranchir des contraintes de colonnes de la table missions_log
         safe_details = f"[Projet: {final_project}] {final_details}"
         
         data = {
@@ -66,15 +67,15 @@ def record_enterprise_decision(summary: str = None, decision_summary: str = None
     except Exception as e:
         return f"Erreur lors de l'enregistrement Supabase : {str(e)}"
 
-def save_business_playbook(project_name: str = None, business_model: str = None, target_market: str = None, constraints_and_rules: str = None, strategy_details: str = None) -> str:
+def save_business_playbook(project_name: str = None, business_model: str = None, target_market: str = None, constraints_and_rules: str = None, strategy_details: str = None, **kwargs) -> str:
     """Enregistre un nouveau playbook stratégique ou modèle de business dans Supabase business_playbooks."""
     try:
         data = {
-            "project_name": project_name or "Projet non spécifié",
-            "business_model": business_model or "",
-            "target_market": target_market or "",
-            "constraints_and_rules": constraints_and_rules or "",
-            "strategy_details": strategy_details or ""
+            "project_name": project_name or kwargs.get("project") or "Projet non spécifié",
+            "business_model": business_model or kwargs.get("model") or "",
+            "target_market": target_market or kwargs.get("target") or "",
+            "constraints_and_rules": constraints_and_rules or kwargs.get("constraints") or "",
+            "strategy_details": strategy_details or kwargs.get("strategy") or ""
         }
         supabase.table("business_playbooks").insert(data).execute()
         return f"Succès : Playbook stratégique enregistré dans le Cerveau Business."
@@ -274,7 +275,7 @@ def process_slack_workflow(user_prompt: str, channel_id: str):
                 final_answer = msg.get("content")
                 break
     except Exception as e:
-        final_answer = f"Erreur d'exécution : {str(e)}"
+        final_answer = f"Erreur d'exécution critique : {str(e)}"
             
     post_to_slack(channel_id, final_answer)
 
