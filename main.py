@@ -10,7 +10,7 @@ from supabase import create_client, Client
 from langgraph.graph import StateGraph, END
 
 # --- 1. INITIALISATION DES CLIENTS & CONFIGURATION ---
-app = FastAPI(title="DG-Core Agentic Architecture", version="2.15-LangGraph-Bulletproof")
+app = FastAPI(title="DG-Core Agentic Architecture", version="2.16-LangGraph-FinalFix")
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -46,16 +46,16 @@ def load_system_prompt() -> str:
     return "Tu es l'agent exécutif DG par défaut."
 
 # --- 3. DÉFINITION DES OUTILS (TOOLS) ---
-def record_enterprise_decision(summary: str = None, decision_summary: str = None, project: str = None, project_name: str = None, details: str = None) -> str:
+def record_enterprise_decision(summary: str = None, decision_summary: str = None, project_name: str = None, project: str = None, details: str = None) -> str:
     """Enregistre un rapport de mission ou une décision dans la table Supabase missions_log."""
     try:
         final_summary = summary or decision_summary or "Résumé non fourni"
-        final_project = project or project_name or "Projet non spécifié"
+        final_project_name = project_name or project or "Projet non spécifié"
         final_details = details or final_summary
         
         data = {
-            "decision_summary": final_summary,
-            "project": final_project,
+            "summary": final_summary,
+            "project_name": final_project_name,
             "details": final_details
         }
         supabase.table("missions_log").insert(data).execute()
@@ -98,12 +98,10 @@ tools_definitions = [
                 "type": "object",
                 "properties": {
                     "summary": {"type": "string", "description": "Résumé clair de la décision ou de l'action."},
-                    "decision_summary": {"type": "string", "description": "Autre variante du résumé de la décision."},
-                    "project": {"type": "string", "description": "Nom du projet en cours."},
-                    "project_name": {"type": "string", "description": "Autre variante du nom du projet."},
+                    "project_name": {"type": "string", "description": "Nom du projet en cours."},
                     "details": {"type": "string", "description": "Rapport détaillé ou étapes techniques réalisées."}
                 },
-                "required": []  # Aucun champ obligatoire pour bloquer l'API Groq
+                "required": []
             }
         }
     },
