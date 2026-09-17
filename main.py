@@ -11,7 +11,7 @@ from supabase import create_client, Client
 from langgraph.graph import StateGraph, END
 
 # --- 1. INITIALISATION DES CLIENTS & CONFIGURATION ---
-app = FastAPI(title="DG-Core Agentic Architecture", version="2.17-LangGraph-AntiRateLimit")
+app = FastAPI(title="DG-Core Agentic Architecture", version="2.18-LangGraph-BulletproofLog")
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -48,16 +48,18 @@ def load_system_prompt() -> str:
 
 # --- 3. DÉFINITION DES OUTILS (TOOLS) ---
 def record_enterprise_decision(summary: str = None, decision_summary: str = None, project_name: str = None, project: str = None, details: str = None) -> str:
-    """Enregistre un rapport de mission ou une décision dans la table Supabase missions_log."""
+    """Enregistre un rapport de mission ou une décision dans la table Supabase missions_log (sans dépendre d'une colonne de projet)."""
     try:
         final_summary = summary or decision_summary or "Résumé non fourni"
-        final_project_name = project_name or project or "Projet non spécifié"
+        final_project = project_name or project or "Projet non spécifié"
         final_details = details or final_summary
+        
+        # On fusionne le projet dans les détails pour s'affranchir des erreurs de colonnes manquantes dans Supabase
+        safe_details = f"[Projet: {final_project}] {final_details}"
         
         data = {
             "summary": final_summary,
-            "project_name": final_project_name,
-            "details": final_details
+            "details": safe_details
         }
         supabase.table("missions_log").insert(data).execute()
         return "Succès : Décision et rapport enregistrés dans Supabase (missions_log)."
@@ -188,7 +190,7 @@ def prepare_messages_for_groq(messages):
 def call_model(state: AgentState):
     payload_messages = prepare_messages_for_groq(state["messages"])
     max_retries = 3
-    retry_delay = 4 # secondes d'attente si rate limit atteint
+    retry_delay = 4
     
     for attempt in range(max_retries):
         try:
@@ -272,7 +274,7 @@ def process_slack_workflow(user_prompt: str, channel_id: str):
                 final_answer = msg.get("content")
                 break
     except Exception as e:
-        final_answer = f"Erreur de quota / taux (Rate Limit Groq) : {str(e)}. Réessaie dans quelques secondes."
+        final_answer = f"Erreur d'exécution : {str(e)}"
             
     post_to_slack(channel_id, final_answer)
 
