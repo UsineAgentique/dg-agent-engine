@@ -3,14 +3,14 @@ import json
 import requests
 from pathlib import Path
 from typing import TypedDict, List, Any
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 from groq import Groq
 from supabase import create_client, Client
 from langgraph.graph import StateGraph, END
 
 # --- 1. INITIALISATION DES CLIENTS & CONFIGURATION ---
-app = FastAPI(title="DG-Core Agentic Architecture", version="2.12-LangGraph-Bulletproof")
+app = FastAPI(title="DG-Core Agentic Architecture", version="2.13-LangGraph-Async")
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -100,7 +100,7 @@ tools_definitions = [
                     "project": {"type": "string", "description": "Nom du projet en cours."},
                     "details": {"type": "string", "description": "Rapport détaillé ou étapes techniques réalisées."}
                 },
-                "required": ["project", "details"]  # <-- On retire summary/decision_summary de required pour stopper les erreurs 400
+                "required": ["project", "details"]
             }
         }
     },
@@ -235,44 +235,48 @@ workflow.add_edge("tools", "agent")
 
 compiled_graph = workflow.compile()
 
-# --- 5. WEBHOOK SLACK ---
+# --- 5. TÂCHE DE FOND ASYNCHRONE POUR SLACK ---
+def process_slack_workflow(user_prompt: str, channel_id: str):
+    """Exécute LangGraph en arrière-plan pour éviter les timeouts Slack (3s)."""
+    initial_messages = [
+        {"role": "system", "content": load_system_prompt()},
+        {"role": "user", "content": user_prompt}
+    ]
+    
+    try:
+        result = compiled_graph.invoke({
+            "messages": initial_messages,
+            "channel_id": channel_id
+        })
+        
+        final_answer = "Mission exécutée avec succès."
+        for msg in reversed(result.get("messages", [])):
+            if hasattr(msg, "content") and msg.content and not getattr(msg, "tool_calls", None):
+                final_answer = msg.content
+                break
+            elif isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("content"):
+                final_answer = msg.get("content")
+                break
+    except Exception as e:
+        final_answer = f"Erreur critique dans le graphe LangGraph : {str(e)}"
+            
+    post_to_slack(channel_id, final_answer)
+
+# --- 6. WEBHOOK SLACK ---
 @app.post("/slack/events")
-async def slack_events(request: Request):
+async def slack_events(request: Request, background_tasks: BackgroundTasks):
     body = await request.json()
     
     if "challenge" in body:
         return JSONResponse(content={"challenge": body["challenge"]})
     
     event = body.get("event", {})
-    if event.get("type") == "app_mention" or (event.get("type") == "message" and not event.get("bot_id") and not event.get("subtype")):
+    if event.get("type"] == "app_mention" or (event.get("type"] == "message" and not event.get("bot_id") and not event.get("subtype")):
         user_prompt = event.get("text")
         channel_id = event.get("channel")
         
-        if not user_prompt or not channel_id:
-            return {"status": "ok"}
-
-        initial_messages = [
-            {"role": "system", "content": load_system_prompt()},
-            {"role": "user", "content": user_prompt}
-        ]
-        
-        try:
-            result = compiled_graph.invoke({
-                "messages": initial_messages,
-                "channel_id": channel_id
-            })
-            
-            final_answer = "Mission exécutée avec succès."
-            for msg in reversed(result.get("messages", [])):
-                if hasattr(msg, "content") and msg.content and not getattr(msg, "tool_calls", None):
-                    final_answer = msg.content
-                    break
-                elif isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("content"):
-                    final_answer = msg.get("content")
-                    break
-        except Exception as e:
-            final_answer = f"Erreur critique dans le graphe LangGraph : {str(e)}"
-                
-        post_to_slack(channel_id, final_answer)
+        if user_prompt and channel_id:
+            # Réponse immédiate à Slack (< 0.1s) et traitement en arrière-plan
+            background_tasks.add_task(process_slack_workflow, user_prompt, channel_id)
         
     return {"status": "ok"}
