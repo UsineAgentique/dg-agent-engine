@@ -2,13 +2,17 @@ import os
 import json
 import requests
 from pathlib import Path
+from typing import TypedDict, List, Any
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from groq import Groq
 from supabase import create_client, Client
+from langgraph.graph import StateGraph, END
+from langgraph.graph.message import add_messages
+from typing import Annotated
 
 # --- 1. INITIALISATION DES CLIENTS & CONFIGURATION ---
-app = FastAPI(title="DG-Core Agentic Architecture", version="2.0")
+app = FastAPI(title="DG-Core Agentic Architecture", version="2.5-LangGraph")
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -134,78 +138,115 @@ tools_definitions = [
     }
 ]
 
-# Dictionnaire de mapping pour exécuter dynamiquement les fonctions
 available_tools = {
     "record_enterprise_decision": record_enterprise_decision,
     "save_business_playbook": save_business_playbook,
     "get_business_playbook": get_business_playbook,
 }
 
-# --- 4. WEBHOOK SLACK & BOUCLE D'EXÉCUTION AGENTIQUE ---
+# --- 4. CONFIGURATION LANGGRAPH (STATE & NODES) ---
+class AgentState(TypedDict):
+    messages: Annotated[List[Any], add_messages]
+    channel_id: str
+
+def call_model(state: AgentState):
+    """Nœud : Appelle l'API Groq avec les outils disponibles."""
+    response = groq_client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=state["messages"],
+        tools=tools_definitions,
+        tool_choice="auto",
+        temperature=0.5
+    )
+    return {"messages": [response.choices[0].message]}
+
+def call_tools(state: AgentState):
+    """Nœud : Exécute les outils demandés par le modèle."""
+    messages = state["messages"]
+    last_message = messages[-1]
+    tool_results = []
+    
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        for tool_call in last_message.tool_calls:
+            function_name = tool_call.function.name
+            function_args = json.loads(tool_call.function.arguments)
+            
+            if function_name in available_tools:
+                output = available_tools[function_name](**function_args)
+            else:
+                output = f"Erreur : Outil {function_name} inconnu."
+                
+            tool_results.append({
+                "tool_call_id": tool_call.id,
+                "role": "tool",
+                "name": function_name,
+                "content": str(output)
+            })
+            
+    return {"messages": tool_results}
+
+def should_continue(state: AgentState):
+    """Condition : Vérifie si le modèle veut encore appeler des outils."""
+    last_message = state["messages"][-1]
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        return "continue"
+    return "end"
+
+# Construction du Graphe
+workflow = StateGraph(AgentState)
+workflow.add_node("agent", call_model)
+workflow.add_node("tools", call_tools)
+
+workflow.set_entry_point("agent")
+workflow.add_conditional_edges(
+    "agent",
+    should_continue,
+    {
+        "continue": "tools",
+        "end": END
+    }
+)
+workflow.add_edge("tools", "agent")
+
+compiled_graph = workflow.compile()
+
+# --- 5. WEBHOOK SLACK ---
 @app.post("/slack/events")
 async def slack_events(request: Request):
     body = await request.json()
     
-    # Gestion du challenge de vérification de l'URL Slack
     if "challenge" in body:
         return JSONResponse(content={"challenge": body["challenge"]})
     
-    # Filtrage des événements Slack (on traite uniquement les messages normaux)
     event = body.get("event", {})
-    if event.get("type") == "app_mention" or (event.get("type") == "message" and not event.get("bot_id")):
+    if event.get("type") == "app_mention" or (event.get("type") == "message" and not event.get("bot_id") and not event.get("subtype")):
         user_prompt = event.get("text")
         channel_id = event.get("channel")
         
         if not user_prompt or not channel_id:
             return {"status": "ok"}
 
-        # Initialisation de la conversation avec le prompt système externe
-        messages = [
+        initial_messages = [
             {"role": "system", "content": load_system_prompt()},
             {"role": "user", "content": user_prompt}
         ]
         
-        final_answer = "Mission exécutée avec succès."
-
-        # Boucle d'exécution de l'agent (max 5 tours pour éviter les boucles infinies)
-        for _ in range(5):
-            response = groq_client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=messages,
-                tools=tools_definitions,
-                tool_choice="auto",
-                temperature=0.5
-            )
-            
-            response_message = response.choices[0].message
-            messages.append(response_message)
-            
-            # Si le modèle souhaite appeler un ou plusieurs outils
-            if response_message.tool_calls:
-                for tool_call in response_message.tool_calls:
-                    function_name = tool_call.function.name
-                    function_args = json.loads(tool_call.function.arguments)
-                    
-                    if function_name in available_tools:
-                        tool_function = available_tools[function_name]
-                        tool_output = tool_function(**function_args)
-                    else:
-                        tool_output = f"Erreur : Outil {function_name} inconnu."
-                    
-                    # Ajout du retour de l'outil dans l'historique des messages
-                    messages.append({
-                        "tool_call_id": tool_call.id,
-                        "role": "tool",
-                        "name": function_name,
-                        "content": str(tool_output)
-                    })
-            else:
-                # Fin de la boucle si le modèle a rédigé sa réponse finale
-                if response_message.content:
-                    final_answer = response_message.content
-                break
+        # Exécution du graphe LangGraph
+        result = compiled_graph.invoke({
+            "messages": initial_messages,
+            "channel_id": channel_id
+        })
         
-        # Envoi de la réponse finale directement sur Slack
+        # Extraction de la réponse finale de l'assistant
+        final_answer = "Mission exécutée avec succès."
+        for msg in reversed(result.get("messages", [])):
+            if hasattr(msg, "content") and msg.content and not getattr(msg, "tool_calls", None):
+                final_answer = msg.content
+                break
+            elif isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("content"):
+                final_answer = msg.get("content")
+                break
+                
         post_to_slack(channel_id, final_answer)
         
     return {"status": "ok"}
