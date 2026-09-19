@@ -11,7 +11,7 @@ from supabase import create_client, Client
 from langgraph.graph import StateGraph, END
 
 # --- 1. INITIALISATION DES CLIENTS & CONFIGURATION ---
-app = FastAPI(title="DG-Core Agentic Architecture", version="2.19-LangGraph-BulletproofFinal")
+app = FastAPI(title="DG-Core Agentic Architecture", version="2.20-PlanAndExecute-Elite")
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -19,18 +19,17 @@ SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-
 MODEL_NAME = "openai/gpt-oss-120b"
 
-# --- HELPER SLACK ---
+# --- 2. HELPER SLACK ---
 def post_to_slack(channel: str, text: str):
-    """Envoie un message de réponse sur le canal Slack spécifié."""
+    """Invoque un message de réponse sur le canal Slack spécifié."""
     slack_token = os.environ.get("SLACK_BOT_TOKEN")
     if not slack_token:
         return
     headers = {
         "Authorization": f"Bearer {slack_token}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
     payload = {
         "channel": channel,
@@ -38,7 +37,7 @@ def post_to_slack(channel: str, text: str):
     }
     requests.post("https://slack.com/api/chat.postMessage", headers=headers, json=payload)
 
-# --- 2. CHARGEMENT DU PROMPT SYSTÈME EXTERNE (.md) ---
+# --- 3. CHARGEMENT DU PROMPT SYSTÈME EXTERNE (.md) ---
 def load_system_prompt() -> str:
     """Charge dynamiquement le prompt système depuis le fichier Markdown."""
     prompt_path = Path("dg_system.md")
@@ -46,17 +45,15 @@ def load_system_prompt() -> str:
         return prompt_path.read_text(encoding="utf-8")
     return "Tu es l'agent exécutif DG par défaut."
 
-# --- 3. DÉFINITION DES OUTILS (TOOLS) ---
-def record_enterprise_decision(summary: str = None, decision_summary: str = None, project_name: str = None, project: str = None, details: str = None, **kwargs) -> str:
+# --- 4. DÉFINITION DES OUTILS (TOOLS) ---
+def record_enterprise_decision(summary: str = None, decision_summary: str = None, project_name: str = None, project: str = None, details: str = None, description: str = None, **kwargs) -> str:
     """Enregistre un rapport de mission ou une décision dans Supabase (100% tolérant aux variations d'arguments du LLM)."""
     try:
-        # Récupération intelligente gérant toutes les variantes possibles envoyées par le modèle
-        final_summary = summary or decision_summary or kwargs.get("summary_text") or kwargs.get("text") or "Résumé non fourni"
+        final_summary = summary or decision_summary or kwargs.get("summary_text") or kwargs.get("text") or "Résumé non spécifié"
         final_project = project_name or project or kwargs.get("project_name_str") or "Projet non spécifié"
         final_details = details or kwargs.get("description") or kwargs.get("detail") or final_summary
         
-        # Fusion propre pour s'affranchir des contraintes de colonnes de la table missions_log
-        safe_details = f"[Projet: {final_project}] {final_details}"
+        safe_details = f"Projet : {final_project} | {final_details}"
         
         data = {
             "summary": final_summary,
@@ -67,18 +64,18 @@ def record_enterprise_decision(summary: str = None, decision_summary: str = None
     except Exception as e:
         return f"Erreur lors de l'enregistrement Supabase : {str(e)}"
 
-def save_business_playbook(project_name: str = None, business_model: str = None, target_market: str = None, constraints_and_rules: str = None, strategy_details: str = None, **kwargs) -> str:
+def save_business_playbook(project_name: str = None, project: str = None, business_model: str = None, model: str = None, target_market: str = None, target: str = None, constraints_and_rules: str = None, constraints: str = None, strategy_details: str = None, strategy: str = None, **kwargs) -> str:
     """Enregistre un nouveau playbook stratégique ou modèle de business dans Supabase business_playbooks."""
     try:
         data = {
-            "project_name": project_name or kwargs.get("project") or "Projet non spécifié",
-            "business_model": business_model or kwargs.get("model") or "",
-            "target_market": target_market or kwargs.get("target") or "",
-            "constraints_and_rules": constraints_and_rules or kwargs.get("constraints") or "",
-            "strategy_details": strategy_details or kwargs.get("strategy") or ""
+            "project_name": project_name or project or kwargs.get("project") or "Projet non spécifié",
+            "business_model": business_model or model or kwargs.get("model") or "Modèle non spécifié",
+            "target_market": target_market or target or kwargs.get("target") or "",
+            "constraints_and_rules": constraints_and_rules or constraints or kwargs.get("constraints") or "",
+            "strategy_details": strategy_details or strategy or kwargs.get("strategy") or ""
         }
         supabase.table("business_playbooks").insert(data).execute()
-        return f"Succès : Playbook stratégique enregistré dans le Cerveau Business."
+        return "Succès : Playbook stratégique enregistré dans le Cerveau Business."
     except Exception as e:
         return f"Erreur lors de l'enregistrement du playbook : {str(e)}"
 
@@ -146,13 +143,15 @@ tools_definitions = [
 available_tools = {
     "record_enterprise_decision": record_enterprise_decision,
     "save_business_playbook": save_business_playbook,
-    "get_business_playbook": get_business_playbook,
+    "get_business_playbook": get_business_playbook
 }
 
-# --- 4. CONFIGURATION LANGGRAPH & NORMALISATION ---
+# --- 5. CONFIGURATION LANGGRAPH & ÉTAT PLAN-AND-EXECUTE ---
 class AgentState(TypedDict):
     messages: List[Any]
     channel_id: str
+    plan: List[str]
+    current_step: int
 
 def prepare_messages_for_groq(messages):
     """Convertit proprement l'historique en dictionnaires valides pour l'API Groq."""
@@ -192,7 +191,7 @@ def call_model(state: AgentState):
     payload_messages = prepare_messages_for_groq(state["messages"])
     max_retries = 3
     retry_delay = 4
-    
+
     for attempt in range(max_retries):
         try:
             response = groq_client.chat.completions.create(
@@ -200,7 +199,7 @@ def call_model(state: AgentState):
                 messages=payload_messages,
                 tools=tools_definitions,
                 tool_choice="auto",
-                temperature=0.5
+                temperature=0.3
             )
             response_message = response.choices[0].message
             return {"messages": state["messages"] + [response_message]}
@@ -216,24 +215,24 @@ def call_tools(state: AgentState):
     messages = state["messages"]
     last_message = messages[-1]
     new_messages = list(messages)
-    
+
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         for tool_call in last_message.tool_calls:
             function_name = tool_call.function.name
             function_args = json.loads(tool_call.function.arguments)
-            
+
             if function_name in available_tools:
                 output = available_tools[function_name](**function_args)
             else:
-                output = f"Erreur : Outil {function_name} inconnu."
-                
+                output = f"Erreur : Outil '{function_name}' inconnu."
+
             new_messages.append({
                 "tool_call_id": tool_call.id,
                 "role": "tool",
                 "name": function_name,
                 "content": str(output)
             })
-            
+
     return {"messages": new_messages}
 
 def should_continue(state: AgentState):
@@ -242,6 +241,7 @@ def should_continue(state: AgentState):
         return "continue"
     return "end"
 
+# Assemblage du Graphe LangGraph
 workflow = StateGraph(AgentState)
 workflow.add_node("agent", call_model)
 workflow.add_node("tools", call_tools)
@@ -252,7 +252,7 @@ workflow.add_edge("tools", "agent")
 
 compiled_graph = workflow.compile()
 
-# --- 5. TÂCHE DE FOND ASYNCHRONE POUR SLACK ---
+# --- 6. TÂCHE DE FOND ASYNCHRONE POUR SLACK ---
 def process_slack_workflow(user_prompt: str, channel_id: str):
     """Exécute LangGraph en arrière-plan pour éviter les timeouts Slack (3s)."""
     initial_messages = [
@@ -260,11 +260,15 @@ def process_slack_workflow(user_prompt: str, channel_id: str):
         {"role": "user", "content": user_prompt}
     ]
     
+    initial_state = {
+        "messages": initial_messages,
+        "channel_id": channel_id,
+        "plan": [],
+        "current_step": 0
+    }
+
     try:
-        result = compiled_graph.invoke({
-            "messages": initial_messages,
-            "channel_id": channel_id
-        })
+        result = compiled_graph.invoke(initial_state)
         
         final_answer = "Mission exécutée avec succès."
         for msg in reversed(result.get("messages", [])):
@@ -276,23 +280,23 @@ def process_slack_workflow(user_prompt: str, channel_id: str):
                 break
     except Exception as e:
         final_answer = f"Erreur d'exécution critique : {str(e)}"
-            
+    
     post_to_slack(channel_id, final_answer)
 
-# --- 6. WEBHOOK SLACK ---
+# --- 7. WEBHOOK SLACK ---
 @app.post("/slack/events")
 async def slack_events(request: Request, background_tasks: BackgroundTasks):
     body = await request.json()
-    
+
     if "challenge" in body:
         return JSONResponse(content={"challenge": body["challenge"]})
-    
+
     event = body.get("event", {})
-    if event.get("type") == "app_mention" or (event.get("type") == "message" and not event.get("bot_id") and not event.get("subtype")):
+    if event.get("type") in ["app_mention", "message"] and not event.get("bot_id") and not event.get("subtype"):
         user_prompt = event.get("text")
         channel_id = event.get("channel")
-        
+
         if user_prompt and channel_id:
             background_tasks.add_task(process_slack_workflow, user_prompt, channel_id)
-        
+
     return {"status": "ok"}
