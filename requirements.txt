@@ -8,3 +8,4 @@ pydantic
 langgraph
 langchain-core
 langchain-groq
+apscheduler
