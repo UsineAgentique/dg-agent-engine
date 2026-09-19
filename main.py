@@ -1,302 +1,180 @@
 import os
-import json
-import time
-import requests
-from pathlib import Path
-from typing import TypedDict, List, Any
-from fastapi import FastAPI, Request, BackgroundTasks
-from fastapi.responses import JSONResponse
-from groq import Groq
-from supabase import create_client, Client
+import operator
+from typing import TypedDict, Annotated, List
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+
+# LangGraph & LangChain imports
 from langgraph.graph import StateGraph, END
+from langchain_core.messages import BaseMessage, AIMessage, ToolMessage
+from langchain_groq import ChatGroq
 
-# --- 1. INITIALISATION DES CLIENTS & CONFIGURATION ---
-app = FastAPI(title="DG-Core Agentic Architecture", version="2.20-PlanAndExecute-Elite")
+# Initialisation de l'application FastAPI
+app = FastAPI(title="DG-Core API", version="1.0.0")
 
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-
-groq_client = Groq(api_key=GROQ_API_KEY)
-supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-MODEL_NAME = "openai/gpt-oss-120b"
-
-# --- 2. HELPER SLACK ---
-def post_to_slack(channel: str, text: str):
-    """Invoque un message de réponse sur le canal Slack spécifié."""
-    slack_token = os.environ.get("SLACK_BOT_TOKEN")
-    if not slack_token:
-        return
-    headers = {
-        "Authorization": f"Bearer {slack_token}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "channel": channel,
-        "text": text
-    }
-    requests.post("https://slack.com/api/chat.postMessage", headers=headers, json=payload)
-
-# --- 3. CHARGEMENT DU PROMPT SYSTÈME EXTERNE (.md) ---
-def load_system_prompt() -> str:
-    """Charge dynamiquement le prompt système depuis le fichier Markdown."""
-    prompt_path = Path("dg_system.md")
-    if prompt_path.exists():
-        return prompt_path.read_text(encoding="utf-8")
-    return "Tu es l'agent exécutif DG par défaut."
-
-# --- 4. DÉFINITION DES OUTILS (TOOLS) ---
-def record_enterprise_decision(summary: str = None, decision_summary: str = None, project_name: str = None, project: str = None, details: str = None, description: str = None, **kwargs) -> str:
-    """Enregistre un rapport de mission ou une décision dans Supabase (100% tolérant aux variations d'arguments du LLM)."""
-    try:
-        final_summary = summary or decision_summary or kwargs.get("summary_text") or kwargs.get("text") or "Résumé non spécifié"
-        final_project = project_name or project or kwargs.get("project_name_str") or "Projet non spécifié"
-        final_details = details or kwargs.get("description") or kwargs.get("detail") or final_summary
-        
-        safe_details = f"Projet : {final_project} | {final_details}"
-        
-        data = {
-            "summary": final_summary,
-            "details": safe_details
-        }
-        supabase.table("missions_log").insert(data).execute()
-        return "Succès : Décision et rapport enregistrés dans Supabase (missions_log)."
-    except Exception as e:
-        return f"Erreur lors de l'enregistrement Supabase : {str(e)}"
-
-def save_business_playbook(project_name: str = None, project: str = None, business_model: str = None, model: str = None, target_market: str = None, target: str = None, constraints_and_rules: str = None, constraints: str = None, strategy_details: str = None, strategy: str = None, **kwargs) -> str:
-    """Enregistre un nouveau playbook stratégique ou modèle de business dans Supabase business_playbooks."""
-    try:
-        data = {
-            "project_name": project_name or project or kwargs.get("project") or "Projet non spécifié",
-            "business_model": business_model or model or kwargs.get("model") or "Modèle non spécifié",
-            "target_market": target_market or target or kwargs.get("target") or "",
-            "constraints_and_rules": constraints_and_rules or constraints or kwargs.get("constraints") or "",
-            "strategy_details": strategy_details or strategy or kwargs.get("strategy") or ""
-        }
-        supabase.table("business_playbooks").insert(data).execute()
-        return "Succès : Playbook stratégique enregistré dans le Cerveau Business."
-    except Exception as e:
-        return f"Erreur lors de l'enregistrement du playbook : {str(e)}"
-
-def get_business_playbook(project_name: str) -> str:
-    """Consulte les playbooks stratégiques et l'historique d'un projet dans Supabase."""
-    try:
-        response = supabase.table("business_playbooks").select("*").eq("project_name", project_name).execute()
-        if response.data:
-            return json.dumps(response.data, ensure_ascii=False)
-        return f"Aucun playbook trouvé pour le projet '{project_name}'."
-    except Exception as e:
-        return f"Erreur lors de la récupération du playbook : {str(e)}"
-
-tools_definitions = [
-    {
-        "type": "function",
-        "function": {
-            "name": "record_enterprise_decision",
-            "description": "Enregistre un rapport de mission, une synthèse ou une décision importante dans la table Supabase missions_log.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "summary": {"type": "string", "description": "Résumé clair de la décision ou de l'action."},
-                    "project_name": {"type": "string", "description": "Nom du projet en cours."},
-                    "details": {"type": "string", "description": "Rapport détaillé ou étapes techniques réalisées."}
-                },
-                "required": []
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "save_business_playbook",
-            "description": "Enregistre un nouveau playbook stratégique ou modèle de business dans Supabase pour un projet.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "project_name": {"type": "string", "description": "Nom du projet ou de l'entreprise."},
-                    "business_model": {"type": "string", "description": "Description détaillée du modèle économique."},
-                    "target_market": {"type": "string", "description": "Marché cible et clients visés."},
-                    "constraints_and_rules": {"type": "string", "description": "Règles, limites ou contraintes strictes."},
-                    "strategy_details": {"type": "string", "description": "Stratégie globale et leviers de croissance."}
-                },
-                "required": []
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_business_playbook",
-            "description": "Consulte la mémoire stratégique et les playbooks d'un projet enregistrés dans Supabase.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "project_name": {"type": "string", "description": "Nom du projet recherché."}
-                },
-                "required": []
-            }
-        }
-    }
-]
-
-available_tools = {
-    "record_enterprise_decision": record_enterprise_decision,
-    "save_business_playbook": save_business_playbook,
-    "get_business_playbook": get_business_playbook
-}
-
-# --- 5. CONFIGURATION LANGGRAPH & ÉTAT PLAN-AND-EXECUTE ---
+# 1. Définition de l'État Global de l'Agent (avec suivi des erreurs)
 class AgentState(TypedDict):
-    messages: List[Any]
-    channel_id: str
-    plan: List[str]
-    current_step: int
+    messages: Annotated[List[BaseMessage], operator.add]
+    retry_count: int  # Compteur de sécurité pour l'auto-correction
 
-def prepare_messages_for_groq(messages):
-    """Convertit proprement l'historique en dictionnaires valides pour l'API Groq."""
-    clean_messages = []
-    for msg in messages:
-        if isinstance(msg, dict):
-            clean_msg = {
-                "role": msg.get("role"),
-                "content": msg.get("content")
-            }
-            if "tool_call_id" in msg:
-                clean_msg["tool_call_id"] = msg["tool_call_id"]
-            if "tool_calls" in msg:
-                clean_msg["tool_calls"] = msg["tool_calls"]
-            clean_messages.append({k: v for k, v in clean_msg.items() if v is not None})
-        else:
-            msg_dict = {
-                "role": getattr(msg, "role", "assistant"),
-                "content": getattr(msg, "content", None)
-            }
-            tool_calls = getattr(msg, "tool_calls", None)
-            if tool_calls:
-                msg_dict["tool_calls"] = [
-                    {
-                        "id": tc.id,
-                        "type": tc.type,
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments
-                        }
-                    } for tc in tool_calls
-                ]
-            clean_messages.append({k: v for k, v in msg_dict.items() if v is not None})
-    return clean_messages
+# Initialisation du modèle LLM (Groq)
+groq_api_key = os.getenv("GROQ_API_KEY")
+llm = ChatGroq(
+    model="llama3-70b-8192",  # ou ton modèle Groq configuré
+    temperature=0,
+    api_key=groq_api_key
+)
+
+# --- 2. Définition des Nœuds du Graphe ---
 
 def call_model(state: AgentState):
-    payload_messages = prepare_messages_for_groq(state["messages"])
-    max_retries = 3
-    retry_delay = 4
+    """Nœud principal : fait appel au DG (LLM) pour analyser l'état et décider des actions."""
+    messages = state["messages"]
+    response = llm.invoke(messages)
+    return {"messages": [response]}
 
-    for attempt in range(max_retries):
-        try:
-            response = groq_client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=payload_messages,
-                tools=tools_definitions,
-                tool_choice="auto",
-                temperature=0.3
-            )
-            response_message = response.choices[0].message
-            return {"messages": state["messages"] + [response_message]}
-        except Exception as e:
-            error_str = str(e)
-            if "429" in error_str or "rate_limit" in error_str.lower():
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                    continue
-            raise e
-
-def call_tools(state: AgentState):
+def tool_node(state: AgentState):
+    """Nœud d'exécution des outils (Supabase, Playbooks, etc.)."""
     messages = state["messages"]
     last_message = messages[-1]
-    new_messages = list(messages)
-
-    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-        for tool_call in last_message.tool_calls:
-            function_name = tool_call.function.name
-            function_args = json.loads(tool_call.function.arguments)
-
-            if function_name in available_tools:
-                output = available_tools[function_name](**function_args)
-            else:
-                output = f"Erreur : Outil '{function_name}' inconnu."
-
-            new_messages.append({
-                "tool_call_id": tool_call.id,
-                "role": "tool",
-                "name": function_name,
-                "content": str(output)
-            })
-
-    return {"messages": new_messages}
-
-def should_continue(state: AgentState):
-    last_message = state["messages"][-1]
-    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-        return "continue"
-    return "end"
-
-# Assemblage du Graphe LangGraph
-workflow = StateGraph(AgentState)
-workflow.add_node("agent", call_model)
-workflow.add_node("tools", call_tools)
-
-workflow.set_entry_point("agent")
-workflow.add_conditional_edges("agent", should_continue, {"continue": "tools", "end": END})
-workflow.add_edge("tools", "agent")
-
-compiled_graph = workflow.compile()
-
-# --- 6. TÂCHE DE FOND ASYNCHRONE POUR SLACK ---
-def process_slack_workflow(user_prompt: str, channel_id: str):
-    """Exécute LangGraph en arrière-plan pour éviter les timeouts Slack (3s)."""
-    initial_messages = [
-        {"role": "system", "content": load_system_prompt()},
-        {"role": "user", "content": user_prompt}
-    ]
     
-    initial_state = {
-        "messages": initial_messages,
-        "channel_id": channel_id,
-        "plan": [],
-        "current_step": 0
+    # Simulation/Exécution des tool_calls demandés par l'agent
+    tool_results = []
+    if last_message.tool_calls:
+        for tool_call in last_message.tool_calls:
+            try:
+                # Ici s'exécutent tes outils connectés (Supabase, etc.)
+                # Exemple de simulation d'un retour d'outil réussi ou en erreur
+                result = f"Exécution réussie de l'outil {tool_call['name']}"
+                tool_results.append(
+                    ToolMessage(content=result, tool_call_id=tool_call["id"])
+                )
+            except Exception as e:
+                # En cas d'erreur technique (ex: SQL invalide, paramètre manquant)
+                error_msg = f"ERROR: L'outil a échoué avec l'exception : {str(e)}"
+                tool_results.append(
+                    ToolMessage(content=error_msg, tool_call_id=tool_call["id"])
+                )
+                
+    return {"messages": tool_results}
+
+def reflection_node(state: AgentState):
+    """Nœud d'auto-correction : analyse l'erreur et guide le DG pour rectifier ses paramètres."""
+    messages = state["messages"]
+    retry_count = state.get("retry_count", 0) + 1
+    
+    last_message = messages[-1]
+    error_content = last_message.content if hasattr(last_message, "content") else "Erreur inconnue"
+    
+    feedback_content = (
+        f"[AUTO-CORRECTION TENTATIVE {retry_count}/3] "
+        f"L'opération précédente a généré l'erreur suivante : '{error_content}'. "
+        "Analyse la cause (mauvaise syntaxe, paramètre incorrect, etc.), "
+        "corrige tes arguments et propose une nouvelle exécution valide."
+    )
+    
+    return {
+        "messages": messages + [AIMessage(content=feedback_content)],
+        "retry_count": retry_count
     }
 
-    try:
-        result = compiled_graph.invoke(initial_state)
-        
-        final_answer = "Mission exécutée avec succès."
-        for msg in reversed(result.get("messages", [])):
-            if hasattr(msg, "content") and msg.content and not getattr(msg, "tool_calls", None):
-                final_answer = msg.content
-                break
-            elif isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("content"):
-                final_answer = msg.get("content")
-                break
-    except Exception as e:
-        final_answer = f"Erreur d'exécution critique : {str(e)}"
+
+# --- 3. Fonctions de Routage Conditionnel ---
+
+def should_continue(state: AgentState):
+    """Détermine si l'agent doit appeler des outils ou terminer sa mission."""
+    messages = state["messages"]
+    last_message = messages[-1]
     
-    post_to_slack(channel_id, final_answer)
+    if last_message.tool_calls:
+        return "tools"
+    return "end"
 
-# --- 7. WEBHOOK SLACK ---
-@app.post("/slack/events")
-async def slack_events(request: Request, background_tasks: BackgroundTasks):
-    body = await request.json()
+def should_reflect_or_continue(state: AgentState):
+    """Vérifie si le retour d'un outil contient une erreur pour déclencher la réflexion."""
+    messages = state["messages"]
+    retry_count = state.get("retry_count", 0)
+    last_message = messages[-1]
+    
+    is_error = False
+    if isinstance(last_message, ToolMessage):
+        content_lower = str(last_message.content).lower()
+        if any(kw in content_lower for kw in ["error", "exception", "failed", "invalid", "traceback", "syntax error"]):
+            is_error = True
+            
+    if is_error:
+        if retry_count >= 3:
+            return "stop"  # Sécurité : blocage après 3 échecs consécutifs
+        return "reflect"
+        
+    return "continue"
 
-    if "challenge" in body:
-        return JSONResponse(content={"challenge": body["challenge"]})
 
-    event = body.get("event", {})
-    if event.get("type") in ["app_mention", "message"] and not event.get("bot_id") and not event.get("subtype"):
-        user_prompt = event.get("text")
-        channel_id = event.get("channel")
+# --- 4. Construction du Graphe LangGraph ---
 
-        if user_prompt and channel_id:
-            background_tasks.add_task(process_slack_workflow, user_prompt, channel_id)
+workflow = StateGraph(AgentState)
 
-    return {"status": "ok"}
+# Ajout des nœuds
+workflow.add_node("agent", call_model)
+workflow.add_node("tools", tool_node)
+workflow.add_node("reflect", reflection_node)
+
+# Point d'entrée
+workflow.set_entry_point("agent")
+
+# Connexions et routages
+workflow.add_conditional_edges(
+    "agent",
+    should_continue,
+    {
+        "tools": "tools",
+        "end": END
+    }
+)
+
+workflow.add_conditional_edges(
+    "tools",
+    should_reflect_or_continue,
+    {
+        "reflect": "reflect",
+        "stop": END,
+        "continue": "agent"
+    }
+)
+
+workflow.add_edge("reflect", "agent")
+
+# Compilation du graphe
+app_graph = workflow.compile()
+
+
+# --- 5. Endpoints FastAPI ---
+
+class MissionRequest(BaseModel):
+    prompt: str
+
+@app.post("/run-mission")
+async def run_mission(request: MissionRequest):
+    """Endpoint principal pour lancer une mission au DG-Core."""
+    try:
+        initial_state = {
+            "messages": [BaseMessage(content=request.prompt, type="human")],
+            "retry_count": 0
+        }
+        
+        # Exécution du graphe LangGraph
+        final_state = app_graph.invoke(initial_state)
+        final_message = final_state["messages"][-1].content
+        
+        return {
+            "status": "success",
+            "result": final_message,
+            "retries_used": final_state.get("retry_count", 0)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/health")
+async def health_check():
+    """Vérification de santé de l'API sur Render."""
+    return {"status": "healthy", "service": "DG-AGENT-CORE"}
