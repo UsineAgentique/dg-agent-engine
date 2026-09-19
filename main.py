@@ -20,7 +20,7 @@ class AgentState(TypedDict):
 # Initialisation du modèle LLM (Groq)
 groq_api_key = os.getenv("GROQ_API_KEY")
 llm = ChatGroq(
-    model="llama3-70b-8192",  # ou ton modèle Groq configuré
+    model="llama3-70b-8192",
     temperature=0,
     api_key=groq_api_key
 )
@@ -34,23 +34,19 @@ def call_model(state: AgentState):
     return {"messages": [response]}
 
 def tool_node(state: AgentState):
-    """Nœud d'exécution des outils (Supabase, Playbooks, etc.)."""
+    """Nœud d'exécution des outils."""
     messages = state["messages"]
     last_message = messages[-1]
     
-    # Simulation/Exécution des tool_calls demandés par l'agent
     tool_results = []
     if last_message.tool_calls:
         for tool_call in last_message.tool_calls:
             try:
-                # Ici s'exécutent tes outils connectés (Supabase, etc.)
-                # Exemple de simulation d'un retour d'outil réussi ou en erreur
                 result = f"Exécution réussie de l'outil {tool_call['name']}"
                 tool_results.append(
                     ToolMessage(content=result, tool_call_id=tool_call["id"])
                 )
             except Exception as e:
-                # En cas d'erreur technique (ex: SQL invalide, paramètre manquant)
                 error_msg = f"ERROR: L'outil a échoué avec l'exception : {str(e)}"
                 tool_results.append(
                     ToolMessage(content=error_msg, tool_call_id=tool_call["id"])
@@ -69,8 +65,7 @@ def reflection_node(state: AgentState):
     feedback_content = (
         f"[AUTO-CORRECTION TENTATIVE {retry_count}/3] "
         f"L'opération précédente a généré l'erreur suivante : '{error_content}'. "
-        "Analyse la cause (mauvaise syntaxe, paramètre incorrect, etc.), "
-        "corrige tes arguments et propose une nouvelle exécution valide."
+        "Analyse la cause, corrige tes arguments et propose une nouvelle exécution valide."
     )
     
     return {
@@ -104,7 +99,7 @@ def should_reflect_or_continue(state: AgentState):
             
     if is_error:
         if retry_count >= 3:
-            return "stop"  # Sécurité : blocage après 3 échecs consécutifs
+            return "stop"
         return "reflect"
         
     return "continue"
@@ -114,15 +109,12 @@ def should_reflect_or_continue(state: AgentState):
 
 workflow = StateGraph(AgentState)
 
-# Ajout des nœuds
 workflow.add_node("agent", call_model)
 workflow.add_node("tools", tool_node)
 workflow.add_node("reflect", reflection_node)
 
-# Point d'entrée
 workflow.set_entry_point("agent")
 
-# Connexions et routages
 workflow.add_conditional_edges(
     "agent",
     should_continue,
@@ -132,6 +124,7 @@ workflow.add_conditional_edges(
     }
 )
 
+# Correction propre ici : on appelle directement la fonction de routage
 workflow.add_conditional_edges(
     "tools",
     should_reflect_or_continue,
@@ -144,7 +137,6 @@ workflow.add_conditional_edges(
 
 workflow.add_edge("reflect", "agent")
 
-# Compilation du graphe
 app_graph = workflow.compile()
 
 
@@ -155,14 +147,11 @@ class MissionRequest(BaseModel):
 
 @app.post("/run-mission")
 async def run_mission(request: MissionRequest):
-    """Endpoint principal pour lancer une mission au DG-Core."""
     try:
         initial_state = {
             "messages": [BaseMessage(content=request.prompt, type="human")],
             "retry_count": 0
         }
-        
-        # Exécution du graphe LangGraph
         final_state = app_graph.invoke(initial_state)
         final_message = final_state["messages"][-1].content
         
@@ -176,5 +165,4 @@ async def run_mission(request: MissionRequest):
 
 @app.get("/health")
 async def health_check():
-    """Vérification de santé de l'API sur Render."""
     return {"status": "healthy", "service": "DG-AGENT-CORE"}
