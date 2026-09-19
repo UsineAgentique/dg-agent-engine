@@ -12,6 +12,9 @@ from langchain_groq import ChatGroq
 # Supabase imports
 from supabase import create_client, Client
 
+# APScheduler imports (Proactivité)
+from apscheduler.schedulers.background import BackgroundScheduler
+
 # Initialisation de l'application FastAPI
 app = FastAPI(title="DG-Core API", version="1.0.0")
 
@@ -33,7 +36,7 @@ llm = ChatGroq(
     api_key=groq_api_key
 )
 
-# --- 2. Outils de Mémoire & Exécution ---
+# --- 2. Outils de Mémoire & Tâches Proactives ---
 
 def search_agent_memory(query_text: str):
     """Interroge la mémoire vectorielle Supabase pour retrouver des playbooks ou antécédents."""
@@ -45,8 +48,30 @@ def search_agent_memory(query_text: str):
     except Exception as e:
         return f"Erreur lors de la recherche en mémoire : {str(e)}"
 
+def proactive_dg_routine():
+    """Routine exécutée automatiquement en arrière-plan par APScheduler."""
+    print("[DG-CORE PROACTIVITÉ] Lancement de la routine automatique de veille...")
+    # Ici tu pourras brancher un appel automatique au graphe si besoin
 
-# --- 3. Définition des Nœuds du Graphe ---
+
+# --- 3. Configuration du Planificateur (APScheduler) ---
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(proactive_dg_routine, 'interval', hours=2)  # S'exécute toutes les 2 heures
+
+@app.on_event("startup")
+async def startup_event():
+    """Démarre le planificateur au lancement du serveur FastAPI."""
+    scheduler.start()
+    print("[DG-CORE] Planificateur temporel démarré avec succès.")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Arrête proprement le planificateur à la fermeture."""
+    scheduler.shutdown()
+
+
+# --- 4. Définition des Nœuds du Graphe ---
 
 def call_model(state: AgentState):
     """Nœud principal : fait appel au DG (LLM) pour analyser l'état et décider des actions."""
@@ -103,7 +128,7 @@ def reflection_node(state: AgentState):
     }
 
 
-# --- 4. Fonctions de Routage Conditionnel ---
+# --- 5. Fonctions de Routage Conditionnel ---
 
 def should_continue(state: AgentState):
     """Détermine si l'agent doit appeler des outils ou terminer sa mission."""
@@ -134,7 +159,7 @@ def should_reflect_or_continue(state: AgentState):
     return "continue"
 
 
-# --- 5. Construction du Graphe LangGraph ---
+# --- 6. Construction du Graphe LangGraph ---
 
 workflow = StateGraph(AgentState)
 
@@ -168,7 +193,7 @@ workflow.add_edge("reflect", "agent")
 app_graph = workflow.compile()
 
 
-# --- 6. Endpoints FastAPI ---
+# --- 7. Endpoints FastAPI ---
 
 class MissionRequest(BaseModel):
     prompt: str
