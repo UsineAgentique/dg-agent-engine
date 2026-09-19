@@ -9,8 +9,16 @@ from langgraph.graph import StateGraph, END
 from langchain_core.messages import BaseMessage, AIMessage, ToolMessage
 from langchain_groq import ChatGroq
 
+# Supabase imports
+from supabase import create_client, Client
+
 # Initialisation de l'application FastAPI
 app = FastAPI(title="DG-Core API", version="1.0.0")
+
+# Initialisation du client Supabase (Mémoire RAG)
+supabase_url = os.getenv("SUPABASE_URL")
+supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+supabase: Client = create_client(supabase_url, supabase_key) if supabase_url and supabase_key else None
 
 # 1. Définition de l'État Global de l'Agent (avec suivi des erreurs)
 class AgentState(TypedDict):
@@ -25,7 +33,20 @@ llm = ChatGroq(
     api_key=groq_api_key
 )
 
-# --- 2. Définition des Nœuds du Graphe ---
+# --- 2. Outils de Mémoire & Exécution ---
+
+def search_agent_memory(query_text: str):
+    """Interroge la mémoire vectorielle Supabase pour retrouver des playbooks ou antécédents."""
+    if not supabase:
+        return "Erreur : Client Supabase non initialisé."
+    try:
+        response = supabase.table("agent_memory").select("content, metadata").limit(5).execute()
+        return response.data
+    except Exception as e:
+        return f"Erreur lors de la recherche en mémoire : {str(e)}"
+
+
+# --- 3. Définition des Nœuds du Graphe ---
 
 def call_model(state: AgentState):
     """Nœud principal : fait appel au DG (LLM) pour analyser l'état et décider des actions."""
@@ -34,7 +55,7 @@ def call_model(state: AgentState):
     return {"messages": [response]}
 
 def tool_node(state: AgentState):
-    """Nœud d'exécution des outils."""
+    """Nœud d'exécution des outils (incluant la mémoire Supabase)."""
     messages = state["messages"]
     last_message = messages[-1]
     
@@ -42,7 +63,15 @@ def tool_node(state: AgentState):
     if last_message.tool_calls:
         for tool_call in last_message.tool_calls:
             try:
-                result = f"Exécution réussie de l'outil {tool_call['name']}"
+                tool_name = tool_call["name"]
+                tool_args = tool_call.get("args", {})
+                
+                if tool_name == "search_agent_memory":
+                    query_text = tool_args.get("query_text", "")
+                    result = str(search_agent_memory(query_text))
+                else:
+                    result = f"Exécution réussie de l'outil {tool_name}"
+                    
                 tool_results.append(
                     ToolMessage(content=result, tool_call_id=tool_call["id"])
                 )
@@ -74,7 +103,7 @@ def reflection_node(state: AgentState):
     }
 
 
-# --- 3. Fonctions de Routage Conditionnel ---
+# --- 4. Fonctions de Routage Conditionnel ---
 
 def should_continue(state: AgentState):
     """Détermine si l'agent doit appeler des outils ou terminer sa mission."""
@@ -105,7 +134,7 @@ def should_reflect_or_continue(state: AgentState):
     return "continue"
 
 
-# --- 4. Construction du Graphe LangGraph ---
+# --- 5. Construction du Graphe LangGraph ---
 
 workflow = StateGraph(AgentState)
 
@@ -124,7 +153,6 @@ workflow.add_conditional_edges(
     }
 )
 
-# Correction propre ici : on appelle directement la fonction de routage
 workflow.add_conditional_edges(
     "tools",
     should_reflect_or_continue,
@@ -140,7 +168,7 @@ workflow.add_edge("reflect", "agent")
 app_graph = workflow.compile()
 
 
-# --- 5. Endpoints FastAPI ---
+# --- 6. Endpoints FastAPI ---
 
 class MissionRequest(BaseModel):
     prompt: str
