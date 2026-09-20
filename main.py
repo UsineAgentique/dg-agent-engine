@@ -16,7 +16,7 @@ from supabase import create_client, Client
 from apscheduler.schedulers.background import BackgroundScheduler
 
 # Initialisation de l'application FastAPI
-app = FastAPI(title="DG-Core API", version="1.0.0")
+app = FastAPI(title="DG-Core API", version="1.1.0")
 
 # Initialisation du client Supabase (Mémoire RAG)
 supabase_url = os.getenv("SUPABASE_URL")
@@ -28,10 +28,10 @@ class AgentState(TypedDict):
     messages: Annotated[List[BaseMessage], operator.add]
     retry_count: int  # Compteur de sécurité pour l'auto-correction
 
-# Initialisation du modèle LLM (Groq)
+# Initialisation du modèle LLM (Groq - gpt-oss-120b haute performance)
 groq_api_key = os.getenv("GROQ_API_KEY")
 llm = ChatGroq(
-    model="llama3-70b-8192",
+    model="gpt-oss-120b",
     temperature=0,
     api_key=groq_api_key
 )
@@ -51,7 +51,6 @@ def search_agent_memory(query_text: str):
 def proactive_dg_routine():
     """Routine exécutée automatiquement en arrière-plan par APScheduler."""
     print("[DG-CORE PROACTIVITÉ] Lancement de la routine automatique de veille...")
-    # Ici tu pourras brancher un appel automatique au graphe si besoin
 
 
 # --- 3. Configuration du Planificateur (APScheduler) ---
@@ -74,7 +73,7 @@ async def shutdown_event():
 # --- 4. Définition des Nœuds du Graphe ---
 
 def call_model(state: AgentState):
-    """Nœud principal : fait appel au DG (LLM) pour analyser l'état et décider des actions."""
+    """Nœud principal : fait appel au DG (LLM gpt-oss-120b) pour analyser l'état."""
     messages = state["messages"]
     response = llm.invoke(messages)
     return {"messages": [response]}
@@ -219,3 +218,7 @@ async def run_mission(request: MissionRequest):
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "DG-AGENT-CORE"}
+
+@app.get("/model")
+async def get_active_model():
+    return {"model": "gpt-oss-120b", "provider": "Groq"}
