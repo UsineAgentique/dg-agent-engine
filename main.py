@@ -1,7 +1,8 @@
 import os
 import operator
+import httpx
 from typing import TypedDict, Annotated, List
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 # LangGraph & LangChain imports
@@ -20,7 +21,7 @@ from firecrawl import FirecrawlApp
 from e2b_code_interpreter import Sandbox
 
 # Initialisation de l'application FastAPI
-app = FastAPI(title="DG-Core API", version="1.2.1")
+app = FastAPI(title="DG-Core API", version="1.3.0")
 
 # Initialisation du client Supabase (Mémoire RAG)
 supabase_url = os.getenv("SUPABASE_URL")
@@ -40,7 +41,7 @@ llm = ChatGroq(
     api_key=groq_api_key
 )
 
-# --- 2. Outils Opérationnels & Mémoire ---
+# --- 2. Outils Opérationnels, Mémoire & Slack ---
 
 def search_agent_memory(query_text: str):
     """Interroge la mémoire vectorielle Supabase pour retrouver des playbooks."""
@@ -73,6 +74,30 @@ def run_code_sandbox(code: str):
     except Exception as e:
         return f"Erreur E2B Sandbox : {str(e)}"
 
+def create_slack_channel(channel_name: str) -> str:
+    """Crée un nouveau canal Slack public dédié à un sous-projet ou une mission spécifique."""
+    slack_token = os.getenv("SLACK_BOT_TOKEN")
+    if not slack_token:
+        return "Erreur : SLACK_BOT_TOKEN manquant."
+    
+    url = "https://slack.com/api/conversations.create"
+    headers = {
+        "Authorization": f"Bearer {slack_token}",
+        "Content-Type": "application/json"
+    }
+    payload = {"name": channel_name}
+    
+    try:
+        response = httpx.post(url, json=payload, headers=headers)
+        data = response.json()
+        if data.get("ok"):
+            channel_id = data["channel"]["id"]
+            return f"Canal Slack '#{channel_name}' créé avec succès (ID: {channel_id})."
+        else:
+            return f"Erreur lors de la création du canal Slack : {data.get('error')}"
+    except Exception as e:
+        return f"Erreur technique Slack : {str(e)}"
+
 def proactive_dg_routine():
     """Routine exécutée automatiquement en arrière-plan par APScheduler."""
     print("[DG-CORE PROACTIVITÉ] Lancement de la routine automatique de veille...")
@@ -101,7 +126,7 @@ def call_model(state: AgentState):
     return {"messages": [response]}
 
 def tool_node(state: AgentState):
-    """Exécute l'outil demandé par le DG (Recherche mémoire, Firecrawl ou E2B)."""
+    """Exécute l'outil demandé par le DG (Recherche mémoire, Firecrawl, E2B ou Slack)."""
     messages = state["messages"]
     last_message = messages[-1]
     
@@ -118,6 +143,8 @@ def tool_node(state: AgentState):
                     result = str(scrape_web_page(tool_args.get("url", "")))
                 elif tool_name == "run_code_sandbox":
                     result = str(run_code_sandbox(tool_args.get("code", "")))
+                elif tool_name == "create_slack_channel":
+                    result = str(create_slack_channel(tool_args.get("channel_name", "")))
                 else:
                     result = f"Outil {tool_name} non reconnu."
                     
@@ -194,7 +221,7 @@ workflow.add_edge("reflect", "agent")
 app_graph = workflow.compile()
 
 
-# --- 7. Endpoints FastAPI ---
+# --- 7. Endpoints FastAPI & Webhook Slack ---
 
 class MissionRequest(BaseModel):
     prompt: str
@@ -217,10 +244,45 @@ async def run_mission(request: MissionRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/slack/events")
+async def slack_events(request: Request):
+    """Endpoint pour recevoir et traiter les messages Slack en temps réel."""
+    data = await request.json()
+    
+    # Gestion du challenge de vérification Slack lors de la configuration de l'URL
+    if data.get("type") == "url_verification":
+        return {"challenge": data.get("challenge")}
+    
+    # Traitement des événements de message
+    event = data.get("event", {})
+    if event.get("type") == "message" and not event.get("bot_id"):
+        user_prompt = event.get("text")
+        channel_id = event.get("channel")
+        
+        # Lancer le graphe LangGraph avec le prompt de l'utilisateur sur Slack
+        initial_state = {
+            "messages": [BaseMessage(content=user_prompt, type="human")],
+            "retry_count": 0
+        }
+        final_state = app_graph.invoke(initial_state)
+        agent_reply = final_state["messages"][-1].content
+        
+        # Répondre sur le canal Slack via l'API Slack
+        slack_token = os.getenv("SLACK_BOT_TOKEN")
+        if slack_token:
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    "https://slack.com/api/chat.postMessage",
+                    headers={"Authorization": f"Bearer {slack_token}"},
+                    json={"channel": channel_id, "text": agent_reply}
+                )
+                
+    return {"status": "ok"}
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "DG-AGENT-CORE"}
 
 @app.get("/model")
 async def get_active_model():
-    return {"model": "gpt-oss-120b", "tools_integrated": ["firecrawl", "e2b", "supabase"]}
+    return {"model": "gpt-oss-120b", "tools_integrated": ["firecrawl", "e2b", "supabase", "slack_channels"]}
