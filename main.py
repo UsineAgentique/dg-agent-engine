@@ -20,7 +20,7 @@ from firecrawl import FirecrawlApp
 from e2b_code_interpreter import Sandbox
 
 # Initialisation de l'application FastAPI
-app = FastAPI(title="DG-Core API", version="1.2.0")
+app = FastAPI(title="DG-Core API", version="1.2.1")
 
 # Initialisation du client Supabase (Mémoire RAG)
 supabase_url = os.getenv("SUPABASE_URL")
@@ -32,7 +32,7 @@ class AgentState(TypedDict):
     messages: Annotated[List[BaseMessage], operator.add]
     retry_count: int
 
-# Initialisation du modèle LLM (Groq - gpt-oss-120b)
+# Initialisation du modèle LLM (Groq - gpt-oss-120b haute performance)
 groq_api_key = os.getenv("GROQ_API_KEY")
 llm = ChatGroq(
     model="gpt-oss-120b",
@@ -212,7 +212,7 @@ async def run_mission(request: MissionRequest):
         return {
             "status": "success",
             "result": final_message,
-            *{"retries_used": final_state.get("retry_count", 0)}
+            "retries_used": final_state.get("retry_count", 0)
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
