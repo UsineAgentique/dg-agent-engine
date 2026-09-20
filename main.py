@@ -246,20 +246,22 @@ async def run_mission(request: MissionRequest):
 
 @app.post("/slack/events")
 async def slack_events(request: Request):
-    """Endpoint pour recevoir et traiter les messages Slack en temps réel."""
+    """Endpoint pour recevoir et traiter les messages et mentions Slack en temps réel."""
     data = await request.json()
     
     # Gestion du challenge de vérification Slack lors de la configuration de l'URL
     if data.get("type") == "url_verification":
         return {"challenge": data.get("challenge")}
     
-    # Traitement des événements de message
+    # Traitement des événements (message ou mention du bot)
     event = data.get("event", {})
-    if event.get("type") == "message" and not event.get("bot_id"):
-        user_prompt = event.get("text")
+    event_type = event.get("type")
+    
+    if event_type in ["message", "app_mention"] and not event.get("bot_id"):
+        user_prompt = event.get("text", "")
         channel_id = event.get("channel")
         
-        # Lancer le graphe LangGraph avec le prompt de l'utilisateur sur Slack
+        # Lancer le graphe LangGraph avec le prompt reçu de Slack
         initial_state = {
             "messages": [BaseMessage(content=user_prompt, type="human")],
             "retry_count": 0
@@ -269,7 +271,7 @@ async def slack_events(request: Request):
         
         # Répondre sur le canal Slack via l'API Slack
         slack_token = os.getenv("SLACK_BOT_TOKEN")
-        if slack_token:
+        if slack_token and channel_id:
             async with httpx.AsyncClient() as client:
                 await client.post(
                     "https://slack.com/api/chat.postMessage",
