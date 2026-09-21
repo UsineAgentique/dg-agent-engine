@@ -1,6 +1,6 @@
 import os
 import httpx
-from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from supabase import create_client, Client
 from langgraph.graph import StateGraph, END
@@ -10,12 +10,12 @@ from langchain_core.tools import tool
 from apscheduler.schedulers.background import BackgroundScheduler
 from e2b_code_interpreter import Sandbox
 from firecrawl import FirecrawlApp
-from typing import TypedDict, List, Dict, Any
+from typing import TypedDict, List, Any
 
 # 1. Initialisation de l'application FastAPI
 app = FastAPI(
     title="DG-Core Sovereign Engine",
-    description="Noyau autonome de pilotage multi-agents (Stack 2026)",
+    description="Noyau autonome de pilotage multi-agents",
     version="2.0.0"
 )
 
@@ -29,9 +29,9 @@ if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
-# Initialisation du modèle LLM ultra-rapide via Groq
+# Restauration du modèle exact validé : openai/gpt-oss-120b
 llm_dg = ChatGroq(
-    model="llama-3.3-70b-versatile",
+    model="openai/gpt-oss-120b",
     temperature=0.2,
     groq_api_key=GROQ_API_KEY
 )
@@ -53,7 +53,7 @@ def search_agent_memory(query: str) -> str:
 
 @tool
 def scrape_web_page(url: str) -> str:
-    """Scrape une page web via Firecrawl et retourne son contenu Markdown pour la veille B2B."""
+    """Scrape une page web via Firecrawl et retourne son contenu Markdown."""
     try:
         api_key = os.getenv("FIRECRAWL_API_KEY")
         if not api_key:
@@ -76,7 +76,7 @@ def run_code_sandbox(code: str) -> str:
 
 @tool
 def create_slack_channel(channel_name: str) -> str:
-    """Crée un nouveau canal Slack public dédié à un sous-projet ou une mission spécifique."""
+    """Crée un nouveau canal Slack public dédié à une mission."""
     slack_token = os.getenv("SLACK_BOT_TOKEN")
     if not slack_token:
         return "Erreur : SLACK_BOT_TOKEN manquant."
@@ -91,8 +91,7 @@ def create_slack_channel(channel_name: str) -> str:
         response = httpx.post(url, json=payload, headers=headers)
         data = response.json()
         if data.get("ok"):
-            channel_id = data["channel"]["id"]
-            return f"Canal Slack #{channel_name} créé avec succès (ID: {channel_id})."
+            return f"Canal Slack #{channel_name} créé avec succès (ID: {data['channel']['id']})."
         else:
             return f"Erreur Slack : {data.get('error')}"
     except Exception as e:
@@ -103,18 +102,7 @@ llm_dg_with_tools = llm_dg.bind_tools(tools)
 
 # 5. Planificateur Proactif (APScheduler)
 def proactive_dg_routine():
-    """Routine exécutée automatiquement en arrière-plan pour lancer des analyses de marché autonomes."""
-    print("[DG-CORE PROACTIVITÉ] Lancement de la routine automatique de veille...")
-    # Le DG-Core déclenche une mission autonome de fond
-    try:
-        initial_state = {
-            "messages": [HumanMessage(content="Effectue une veille proactive des opportunités business rentables.")],
-            "retry_count": 0
-        }
-        # Appel interne du graphe pour exécuter la tâche de fond
-        app_graph.invoke(initial_state)
-    except Exception as e:
-        print(f"[DG-CORE ERREUR PROACTIVITÉ] {str(e)}")
+    print("[DG-CORE PROACTIVITÉ] Routine de fond lancée.")
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(proactive_dg_routine, 'interval', hours=2)
@@ -122,13 +110,12 @@ scheduler.add_job(proactive_dg_routine, 'interval', hours=2)
 @app.on_event("startup")
 async def startup_event():
     scheduler.start()
-    print("[DG-CORE] Planificateur temporel démarré.")
 
 @app.on_event("shutdown")
 async def shutdown_event():
     scheduler.shutdown()
 
-# 6. Définition des Nœuds du Graphe LangGraph
+# 6. Nœuds du Graphe LangGraph
 def call_model(state: AgentState):
     messages = state["messages"]
     response = llm_dg_with_tools.invoke(messages)
@@ -165,7 +152,7 @@ def tool_node(state: AgentState):
 def reflection_node(state: AgentState):
     messages = state["messages"]
     retry_count = state.get("retry_count", 0) + 1
-    feedback_content = f"[AUTO-CORRECTION TENTATIVE {retry_count}/3] Analyse l'erreur précédente, corrige tes paramètres et propose une nouvelle exécution valide."
+    feedback_content = f"[AUTO-CORRECTION TENTATIVE {retry_count}/3] Analyse l'erreur et propose une correction."
     return {
         "messages": [AIMessage(content=feedback_content)],
         "retry_count": retry_count
@@ -173,23 +160,19 @@ def reflection_node(state: AgentState):
 
 # 7. Routage Conditionnel
 def should_continue(state: AgentState):
-    messages = state["messages"]
-    last_message = messages[-1]
+    last_message = state["messages"][-1]
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "tools"
     return "end"
 
 def should_reflect_or_continue(state: AgentState):
-    messages = state["messages"]
     retry_count = state.get("retry_count", 0)
-    last_message = messages[-1]
-    
+    last_message = state["messages"][-1]
     is_error = isinstance(last_message, ToolMessage) and "ERROR" in last_message.content
     if is_error and retry_count < 3:
         return "reflect"
     return "agent"
 
-# Construction du graphe d'exécution
 workflow = StateGraph(AgentState)
 workflow.add_node("agent", call_model)
 workflow.add_node("tools", tool_node)
@@ -202,7 +185,7 @@ workflow.add_edge("reflect", "agent")
 
 app_graph = workflow.compile()
 
-# 8. Endpoints FastAPI & Webhook Slack
+# 8. Endpoints FastAPI
 class MissionRequest(BaseModel):
     prompt: str
 
@@ -216,7 +199,6 @@ async def run_mission(request: MissionRequest):
         final_state = app_graph.invoke(initial_state)
         final_message = final_state["messages"][-1].content
         
-        # Enregistrement dans Supabase
         supabase.table("execution_logs").insert({
             "task": request.prompt,
             "output": {"result": final_message},
@@ -231,34 +213,6 @@ async def run_mission(request: MissionRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/slack/events")
-async def slack_events(request: Request):
-    data = await request.json()
-    if data.get("type") == "url_verification":
-        return {"challenge": data.get("challenge")}
-    
-    event = data.get("event", {})
-    if event.get("type") in ["message", "app_mention"] and not event.get("bot_id"):
-        user_prompt = event.get("text", "")
-        channel_id = event.get("channel")
-        
-        initial_state = {
-            "messages": [HumanMessage(content=user_prompt)],
-            "retry_count": 0
-        }
-        final_state = app_graph.invoke(initial_state)
-        agent_reply = final_state["messages"][-1].content
-        
-        slack_token = os.getenv("SLACK_BOT_TOKEN")
-        if slack_token and channel_id:
-            async with httpx.AsyncClient() as client:
-                await client.post(
-                    "https://slack.com/api/chat.postMessage",
-                    headers={"Authorization": f"Bearer {slack_token}"},
-                    json={"channel": channel_id, "text": agent_reply}
-                )
-    return {"status": "ok"}
-
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "DG-AGENT-CORE"}
@@ -266,6 +220,6 @@ async def health_check():
 @app.get("/model")
 async def get_active_model():
     return {
-        "dg_model": "llama-3.3-70b-versatile",
+        "dg_model": "openai/gpt-oss-120b",
         "tools_integrated": ["firecrawl", "e2b", "supabase", "slack_channels"]
     }
