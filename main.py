@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 # LangGraph & LangChain imports
 from langgraph.graph import StateGraph, END
-from langchain_core.messages import BaseMessage, AIMessage, ToolMessage
+from langchain_core.messages import BaseMessage, AIMessage, ToolMessage, HumanMessage
 from langchain_groq import ChatGroq
 
 # Supabase imports
@@ -230,7 +230,7 @@ class MissionRequest(BaseModel):
 async def run_mission(request: MissionRequest):
     try:
         initial_state = {
-            "messages": [BaseMessage(content=request.prompt, type="human")],
+            "messages": [HumanMessage(content=request.prompt)],
             "retry_count": 0
         }
         final_state = app_graph.invoke(initial_state)
@@ -249,7 +249,7 @@ async def slack_events(request: Request):
     """Endpoint pour recevoir et traiter les messages et mentions Slack en temps réel."""
     data = await request.json()
     
-    # Gestion du challenge de vérification Slack lors de la configuration de l'URL
+    # Gestion du challenge de vérification Slack
     if data.get("type") == "url_verification":
         return {"challenge": data.get("challenge")}
     
@@ -261,9 +261,9 @@ async def slack_events(request: Request):
         user_prompt = event.get("text", "")
         channel_id = event.get("channel")
         
-        # Lancer le graphe LangGraph avec le prompt reçu de Slack
+        # Lancer le graphe LangGraph avec HumanMessage
         initial_state = {
-            "messages": [BaseMessage(content=user_prompt, type="human")],
+            "messages": [HumanMessage(content=user_prompt)],
             "retry_count": 0
         }
         final_state = app_graph.invoke(initial_state)
