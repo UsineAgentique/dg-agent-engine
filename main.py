@@ -8,6 +8,7 @@ from pydantic import BaseModel
 # LangGraph & LangChain imports
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import BaseMessage, AIMessage, ToolMessage, HumanMessage
+from langchain_core.tools import tool
 from langchain_groq import ChatGroq
 
 # Supabase imports
@@ -21,7 +22,7 @@ from firecrawl import FirecrawlApp
 from e2b_code_interpreter import Sandbox
 
 # Initialisation de l'application FastAPI
-app = FastAPI(title="DG-Core API", version="1.4.0")
+app = FastAPI(title="DG-Core API", version="1.4.1")
 
 # Initialisation du client Supabase (Mémoire RAG)
 supabase_url = os.getenv("SUPABASE_URL")
@@ -51,8 +52,9 @@ llm_worker = ChatGroq(
 )
 
 
-# --- 3. Outils Opérationnels, Mémoire & Slack ---
+# --- 3. Outils Opérationnels (Décorés avec @tool) ---
 
+@tool
 def search_agent_memory(query_text: str):
     """Interroge la mémoire vectorielle Supabase pour retrouver des playbooks."""
     if not supabase:
@@ -63,6 +65,7 @@ def search_agent_memory(query_text: str):
     except Exception as e:
         return f"Erreur lors de la recherche en mémoire : {str(e)}"
 
+@tool
 def scrape_web_page(url: str):
     """Scrape une page web via Firecrawl et retourne son contenu Markdown."""
     try:
@@ -75,6 +78,7 @@ def scrape_web_page(url: str):
     except Exception as e:
         return f"Erreur Firecrawl : {str(e)}"
 
+@tool
 def run_code_sandbox(code: str):
     """Exécute du code Python dans un bac à sable sécurisé E2B."""
     try:
@@ -84,6 +88,7 @@ def run_code_sandbox(code: str):
     except Exception as e:
         return f"Erreur E2B Sandbox : {str(e)}"
 
+@tool
 def create_slack_channel(channel_name: str) -> str:
     """Crée un nouveau canal Slack public dédié à un sous-projet ou une mission spécifique."""
     slack_token = os.getenv("SLACK_BOT_TOKEN")
@@ -108,12 +113,16 @@ def create_slack_channel(channel_name: str) -> str:
     except Exception as e:
         return f"Erreur technique Slack : {str(e)}"
 
+# Liaison des outils au modèle Stratégique du DG
+tools = [search_agent_memory, scrape_web_page, run_code_sandbox, create_slack_channel]
+llm_dg_with_tools = llm_dg.bind_tools(tools)
+
+
+# --- 4. Planificateur (APScheduler) ---
+
 def proactive_dg_routine():
     """Routine exécutée automatiquement en arrière-plan par APScheduler."""
     print("[DG-CORE PROACTIVITÉ] Lancement de la routine automatique de veille...")
-
-
-# --- 4. Configuration du Planificateur (APScheduler) ---
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(proactive_dg_routine, 'interval', hours=2)
@@ -131,9 +140,9 @@ async def shutdown_event():
 # --- 5. Définition des Nœuds du Graphe ---
 
 def call_model(state: AgentState):
-    """Nœud principal piloté par le Cerveau Stratégique (DG-Core)."""
+    """Nœud principal piloté par le Cerveau Stratégique (DG-Core) avec outils liés."""
     messages = state["messages"]
-    response = llm_dg.invoke(messages)
+    response = llm_dg_with_tools.invoke(messages)
     return {"messages": [response]}
 
 def tool_node(state: AgentState):
@@ -149,13 +158,13 @@ def tool_node(state: AgentState):
                 tool_args = tool_call.get("args", {})
                 
                 if tool_name == "search_agent_memory":
-                    result = str(search_agent_memory(tool_args.get("query_text", "")))
+                    result = str(search_agent_memory.invoke(tool_args))
                 elif tool_name == "scrape_web_page":
-                    result = str(scrape_web_page(tool_args.get("url", "")))
+                    result = str(scrape_web_page.invoke(tool_args))
                 elif tool_name == "run_code_sandbox":
-                    result = str(run_code_sandbox(tool_args.get("code", "")))
+                    result = str(run_code_sandbox.invoke(tool_args))
                 elif tool_name == "create_slack_channel":
-                    result = str(create_slack_channel(tool_args.get("channel_name", "")))
+                    result = str(create_slack_channel.invoke(tool_args))
                 else:
                     result = f"Outil {tool_name} non reconnu."
                     
@@ -272,7 +281,6 @@ async def slack_events(request: Request):
         user_prompt = event.get("text", "")
         channel_id = event.get("channel")
         
-        # Lancer le graphe LangGraph avec HumanMessage
         initial_state = {
             "messages": [HumanMessage(content=user_prompt)],
             "retry_count": 0
