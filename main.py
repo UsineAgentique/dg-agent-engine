@@ -1,77 +1,63 @@
 import os
-import operator
 import httpx
-from typing import TypedDict, Annotated, List
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from pydantic import BaseModel
-
-# LangGraph & LangChain imports
-from langgraph.graph import StateGraph, END
-from langchain_core.messages import BaseMessage, AIMessage, ToolMessage, HumanMessage
-from langchain_core.tools import tool
-from langchain_groq import ChatGroq
-
-# Supabase imports
 from supabase import create_client, Client
-
-# APScheduler imports (Proactivité)
+from langgraph.graph import StateGraph, END
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langchain_groq import ChatGroq
+from langchain_core.tools import tool
 from apscheduler.schedulers.background import BackgroundScheduler
-
-# Outils Avancés (Firecrawl & E2B)
-from firecrawl import FirecrawlApp
 from e2b_code_interpreter import Sandbox
+from firecrawl import FirecrawlApp
+from typing import TypedDict, List, Dict, Any
 
-# Initialisation de l'application FastAPI
-app = FastAPI(title="DG-Core API", version="1.4.1")
+# 1. Initialisation de l'application FastAPI
+app = FastAPI(
+    title="DG-Core Sovereign Engine",
+    description="Noyau autonome de pilotage multi-agents (Stack 2026)",
+    version="2.0.0"
+)
 
-# Initialisation du client Supabase (Mémoire RAG)
-supabase_url = os.getenv("SUPABASE_URL")
-supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-supabase: Client = create_client(supabase_url, supabase_key) if supabase_url and supabase_key else None
+# 2. Récupération sécurisée des variables d'environnement
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# 1. Définition de l'État Global de l'Agent
+if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+    raise RuntimeError("Erreur critique : Les variables Supabase sont manquantes.")
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+# Initialisation du modèle LLM ultra-rapide via Groq
+llm_dg = ChatGroq(
+    model="llama-3.3-70b-versatile",
+    temperature=0.2,
+    groq_api_key=GROQ_API_KEY
+)
+
+# 3. Définition de l'État Global (AgentState)
 class AgentState(TypedDict):
-    messages: Annotated[List[BaseMessage], operator.add]
+    messages: List[Any]
     retry_count: int
 
-# --- 2. Initialisation des Modèles LLM (Architecture Hybride Groq) ---
-groq_api_key = os.getenv("GROQ_API_KEY")
-
-# Modèle Stratégique (DG-Core) : Haut niveau de raisonnement et tool calling
-llm_dg = ChatGroq(
-    model="openai/gpt-oss-120b",
-    temperature=0,
-    api_key=groq_api_key
-)
-
-# Modèle d'Exécution / Sous-Agents : Ultra rapide, quotas gratuits massifs
-llm_worker = ChatGroq(
-    model="llama-3.1-8b-instant",
-    temperature=0,
-    api_key=groq_api_key
-)
-
-
-# --- 3. Outils Opérationnels (Décorés avec @tool) ---
-
+# 4. Définition des Outils Souverains (Tools)
 @tool
-def search_agent_memory(query_text: str):
-    """Interroge la mémoire vectorielle Supabase pour retrouver des playbooks."""
-    if not supabase:
-        return "Erreur : Client Supabase non initialisé."
+def search_agent_memory(query: str) -> str:
+    """Recherche dans la base vectorielle Supabase les connaissances et compétences des agents."""
     try:
         response = supabase.table("agent_memory").select("content, metadata").limit(5).execute()
-        return response.data
+        return str(response.data)
     except Exception as e:
         return f"Erreur lors de la recherche en mémoire : {str(e)}"
 
 @tool
-def scrape_web_page(url: str):
-    """Scrape une page web via Firecrawl et retourne son contenu Markdown."""
+def scrape_web_page(url: str) -> str:
+    """Scrape une page web via Firecrawl et retourne son contenu Markdown pour la veille B2B."""
     try:
         api_key = os.getenv("FIRECRAWL_API_KEY")
         if not api_key:
-            return "Erreur : FIRECRAWL_API_KEY manquante dans l'environnement."
+            return "Erreur : FIRECRAWL_API_KEY manquante."
         app_fc = FirecrawlApp(api_key=api_key)
         result = app_fc.scrape_url(url, params={'formats': ['markdown']})
         return result.get('markdown', 'Contenu non trouvé')
@@ -79,7 +65,7 @@ def scrape_web_page(url: str):
         return f"Erreur Firecrawl : {str(e)}"
 
 @tool
-def run_code_sandbox(code: str):
+def run_code_sandbox(code: str) -> str:
     """Exécute du code Python dans un bac à sable sécurisé E2B."""
     try:
         with Sandbox() as sandbox:
@@ -101,28 +87,34 @@ def create_slack_channel(channel_name: str) -> str:
         "Content-Type": "application/json"
     }
     payload = {"name": channel_name}
-    
     try:
         response = httpx.post(url, json=payload, headers=headers)
         data = response.json()
         if data.get("ok"):
             channel_id = data["channel"]["id"]
-            return f"Canal Slack '#{channel_name}' créé avec succès (ID: {channel_id})."
+            return f"Canal Slack #{channel_name} créé avec succès (ID: {channel_id})."
         else:
-            return f"Erreur lors de la création du canal Slack : {data.get('error')}"
+            return f"Erreur Slack : {data.get('error')}"
     except Exception as e:
         return f"Erreur technique Slack : {str(e)}"
 
-# Liaison des outils au modèle Stratégique du DG
 tools = [search_agent_memory, scrape_web_page, run_code_sandbox, create_slack_channel]
 llm_dg_with_tools = llm_dg.bind_tools(tools)
 
-
-# --- 4. Planificateur (APScheduler) ---
-
+# 5. Planificateur Proactif (APScheduler)
 def proactive_dg_routine():
-    """Routine exécutée automatiquement en arrière-plan par APScheduler."""
+    """Routine exécutée automatiquement en arrière-plan pour lancer des analyses de marché autonomes."""
     print("[DG-CORE PROACTIVITÉ] Lancement de la routine automatique de veille...")
+    # Le DG-Core déclenche une mission autonome de fond
+    try:
+        initial_state = {
+            "messages": [HumanMessage(content="Effectue une veille proactive des opportunités business rentables.")],
+            "retry_count": 0
+        }
+        # Appel interne du graphe pour exécuter la tâche de fond
+        app_graph.invoke(initial_state)
+    except Exception as e:
+        print(f"[DG-CORE ERREUR PROACTIVITÉ] {str(e)}")
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(proactive_dg_routine, 'interval', hours=2)
@@ -136,73 +128,54 @@ async def startup_event():
 async def shutdown_event():
     scheduler.shutdown()
 
-
-# --- 5. Définition des Nœuds du Graphe ---
-
+# 6. Définition des Nœuds du Graphe LangGraph
 def call_model(state: AgentState):
-    """Nœud principal piloté par le Cerveau Stratégique (DG-Core) avec outils liés."""
     messages = state["messages"]
     response = llm_dg_with_tools.invoke(messages)
     return {"messages": [response]}
 
 def tool_node(state: AgentState):
-    """Exécute l'outil demandé par le DG (Recherche mémoire, Firecrawl, E2B ou Slack)."""
     messages = state["messages"]
     last_message = messages[-1]
-    
     tool_results = []
-    if last_message.tool_calls:
+    
+    if hasattr(last_message, "tool_calls"):
         for tool_call in last_message.tool_calls:
             try:
                 tool_name = tool_call["name"]
                 tool_args = tool_call.get("args", {})
                 
                 if tool_name == "search_agent_memory":
-                    result = str(search_agent_memory.invoke(tool_args))
+                    result = search_agent_memory.invoke(tool_args)
                 elif tool_name == "scrape_web_page":
-                    result = str(scrape_web_page.invoke(tool_args))
+                    result = scrape_web_page.invoke(tool_args)
                 elif tool_name == "run_code_sandbox":
-                    result = str(run_code_sandbox.invoke(tool_args))
+                    result = run_code_sandbox.invoke(tool_args)
                 elif tool_name == "create_slack_channel":
-                    result = str(create_slack_channel.invoke(tool_args))
+                    result = create_slack_channel.invoke(tool_args)
                 else:
                     result = f"Outil {tool_name} non reconnu."
-                    
-                tool_results.append(
-                    ToolMessage(content=result, tool_call_id=tool_call["id"])
-                )
+                
+                tool_results.append(ToolMessage(content=str(result), tool_call_id=tool_call["id"]))
             except Exception as e:
-                error_msg = f"ERROR: L'outil a échoué : {str(e)}"
-                tool_results.append(
-                    ToolMessage(content=error_msg, tool_call_id=tool_call["id"])
-                )
+                tool_results.append(ToolMessage(content=f"ERROR: {str(e)}", tool_call_id=tool_call["id"]))
                 
     return {"messages": tool_results}
 
 def reflection_node(state: AgentState):
     messages = state["messages"]
     retry_count = state.get("retry_count", 0) + 1
-    last_message = messages[-1]
-    error_content = last_message.content if hasattr(last_message, "content") else "Erreur inconnue"
-    
-    feedback_content = (
-        f"[AUTO-CORRECTION TENTATIVE {retry_count}/3] "
-        f"L'opération précédente a échoué : '{error_content}'. "
-        "Analyse la cause, corrige tes paramètres et propose une nouvelle exécution valide."
-    )
-    
+    feedback_content = f"[AUTO-CORRECTION TENTATIVE {retry_count}/3] Analyse l'erreur précédente, corrige tes paramètres et propose une nouvelle exécution valide."
     return {
-        "messages": messages + [AIMessage(content=feedback_content)],
+        "messages": [AIMessage(content=feedback_content)],
         "retry_count": retry_count
     }
 
-
-# --- 6. Routage Conditionnel ---
-
+# 7. Routage Conditionnel
 def should_continue(state: AgentState):
     messages = state["messages"]
     last_message = messages[-1]
-    if last_message.tool_calls:
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "tools"
     return "end"
 
@@ -211,38 +184,25 @@ def should_reflect_or_continue(state: AgentState):
     retry_count = state.get("retry_count", 0)
     last_message = messages[-1]
     
-    is_error = False
-    if isinstance(last_message, ToolMessage):
-        content_lower = str(last_message.content).lower()
-        if any(kw in content_lower for kw in ["error", "exception", "failed", "invalid", "traceback"]):
-            is_error = True
-            
-    if is_error:
-        if retry_count >= 3:
-            return "stop"
+    is_error = isinstance(last_message, ToolMessage) and "ERROR" in last_message.content
+    if is_error and retry_count < 3:
         return "reflect"
-    return "continue"
+    return "agent"
 
-
-# --- 7. Construction du Graphe ---
-
+# Construction du graphe d'exécution
 workflow = StateGraph(AgentState)
-
 workflow.add_node("agent", call_model)
 workflow.add_node("tools", tool_node)
 workflow.add_node("reflect", reflection_node)
 
 workflow.set_entry_point("agent")
-
 workflow.add_conditional_edges("agent", should_continue, {"tools": "tools", "end": END})
-workflow.add_conditional_edges("tools", should_reflect_or_continue, {"reflect": "reflect", "stop": END, "continue": "agent"})
+workflow.add_conditional_edges("tools", should_reflect_or_continue, {"reflect": "reflect", "agent": "agent"})
 workflow.add_edge("reflect", "agent")
 
 app_graph = workflow.compile()
 
-
-# --- 8. Endpoints FastAPI & Webhook Slack ---
-
+# 8. Endpoints FastAPI & Webhook Slack
 class MissionRequest(BaseModel):
     prompt: str
 
@@ -256,6 +216,13 @@ async def run_mission(request: MissionRequest):
         final_state = app_graph.invoke(initial_state)
         final_message = final_state["messages"][-1].content
         
+        # Enregistrement dans Supabase
+        supabase.table("execution_logs").insert({
+            "task": request.prompt,
+            "output": {"result": final_message},
+            "status": "success"
+        }).execute()
+        
         return {
             "status": "success",
             "result": final_message,
@@ -266,18 +233,12 @@ async def run_mission(request: MissionRequest):
 
 @app.post("/slack/events")
 async def slack_events(request: Request):
-    """Endpoint pour recevoir et traiter les messages et mentions Slack en temps réel."""
     data = await request.json()
-    
-    # Gestion du challenge de vérification Slack
     if data.get("type") == "url_verification":
         return {"challenge": data.get("challenge")}
     
-    # Traitement des événements (message ou mention du bot)
     event = data.get("event", {})
-    event_type = event.get("type")
-    
-    if event_type in ["message", "app_mention"] and not event.get("bot_id"):
+    if event.get("type") in ["message", "app_mention"] and not event.get("bot_id"):
         user_prompt = event.get("text", "")
         channel_id = event.get("channel")
         
@@ -288,7 +249,6 @@ async def slack_events(request: Request):
         final_state = app_graph.invoke(initial_state)
         agent_reply = final_state["messages"][-1].content
         
-        # Répondre sur le canal Slack via l'API Slack
         slack_token = os.getenv("SLACK_BOT_TOKEN")
         if slack_token and channel_id:
             async with httpx.AsyncClient() as client:
@@ -297,7 +257,6 @@ async def slack_events(request: Request):
                     headers={"Authorization": f"Bearer {slack_token}"},
                     json={"channel": channel_id, "text": agent_reply}
                 )
-                
     return {"status": "ok"}
 
 @app.get("/health")
@@ -307,7 +266,6 @@ async def health_check():
 @app.get("/model")
 async def get_active_model():
     return {
-        "dg_model": "openai/gpt-oss-120b",
-        "worker_model": "llama-3.1-8b-instant",
+        "dg_model": "llama-3.3-70b-versatile",
         "tools_integrated": ["firecrawl", "e2b", "supabase", "slack_channels"]
     }
