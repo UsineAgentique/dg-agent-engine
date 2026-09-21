@@ -21,7 +21,7 @@ from firecrawl import FirecrawlApp
 from e2b_code_interpreter import Sandbox
 
 # Initialisation de l'application FastAPI
-app = FastAPI(title="DG-Core API", version="1.3.0")
+app = FastAPI(title="DG-Core API", version="1.4.0")
 
 # Initialisation du client Supabase (Mémoire RAG)
 supabase_url = os.getenv("SUPABASE_URL")
@@ -33,15 +33,25 @@ class AgentState(TypedDict):
     messages: Annotated[List[BaseMessage], operator.add]
     retry_count: int
 
-# Initialisation du modèle LLM (Groq - gpt-oss-120b haute performance)
+# --- 2. Initialisation des Modèles LLM (Architecture Hybride Groq) ---
 groq_api_key = os.getenv("GROQ_API_KEY")
-llm = ChatGroq(
-    model="gpt-oss-120b",
+
+# Modèle Stratégique (DG-Core) : Haut niveau de raisonnement et tool calling
+llm_dg = ChatGroq(
+    model="openai/gpt-oss-120b",
     temperature=0,
     api_key=groq_api_key
 )
 
-# --- 2. Outils Opérationnels, Mémoire & Slack ---
+# Modèle d'Exécution / Sous-Agents : Ultra rapide, quotas gratuits massifs
+llm_worker = ChatGroq(
+    model="llama-3.1-8b-instant",
+    temperature=0,
+    api_key=groq_api_key
+)
+
+
+# --- 3. Outils Opérationnels, Mémoire & Slack ---
 
 def search_agent_memory(query_text: str):
     """Interroge la mémoire vectorielle Supabase pour retrouver des playbooks."""
@@ -103,7 +113,7 @@ def proactive_dg_routine():
     print("[DG-CORE PROACTIVITÉ] Lancement de la routine automatique de veille...")
 
 
-# --- 3. Configuration du Planificateur (APScheduler) ---
+# --- 4. Configuration du Planificateur (APScheduler) ---
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(proactive_dg_routine, 'interval', hours=2)
@@ -118,11 +128,12 @@ async def shutdown_event():
     scheduler.shutdown()
 
 
-# --- 4. Définition des Nœuds du Graphe ---
+# --- 5. Définition des Nœuds du Graphe ---
 
 def call_model(state: AgentState):
+    """Nœud principal piloté par le Cerveau Stratégique (DG-Core)."""
     messages = state["messages"]
-    response = llm.invoke(messages)
+    response = llm_dg.invoke(messages)
     return {"messages": [response]}
 
 def tool_node(state: AgentState):
@@ -177,7 +188,7 @@ def reflection_node(state: AgentState):
     }
 
 
-# --- 5. Routage Conditionnel ---
+# --- 6. Routage Conditionnel ---
 
 def should_continue(state: AgentState):
     messages = state["messages"]
@@ -204,7 +215,7 @@ def should_reflect_or_continue(state: AgentState):
     return "continue"
 
 
-# --- 6. Construction du Graphe ---
+# --- 7. Construction du Graphe ---
 
 workflow = StateGraph(AgentState)
 
@@ -221,7 +232,7 @@ workflow.add_edge("reflect", "agent")
 app_graph = workflow.compile()
 
 
-# --- 7. Endpoints FastAPI & Webhook Slack ---
+# --- 8. Endpoints FastAPI & Webhook Slack ---
 
 class MissionRequest(BaseModel):
     prompt: str
@@ -287,4 +298,8 @@ async def health_check():
 
 @app.get("/model")
 async def get_active_model():
-    return {"model": "gpt-oss-120b", "tools_integrated": ["firecrawl", "e2b", "supabase", "slack_channels"]}
+    return {
+        "dg_model": "openai/gpt-oss-120b",
+        "worker_model": "llama-3.1-8b-instant",
+        "tools_integrated": ["firecrawl", "e2b", "supabase", "slack_channels"]
+    }
