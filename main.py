@@ -16,7 +16,7 @@ from typing import TypedDict, List, Any
 app = FastAPI(
     title="DG-Core Sovereign Engine",
     description="Noyau autonome de pilotage multi-agents",
-    version="2.0.0"
+    version="2.3.0"
 )
 
 # 2. Récupération sécurisée des variables d'environnement
@@ -91,7 +91,7 @@ def create_slack_channel(channel_name: str) -> str:
         response = httpx.post(url, json=payload, headers=headers)
         data = response.json()
         if data.get("ok"):
-            return f"Canal Slack #{channel_name} créé avec succès (ID: {data['channel']['id']})."
+            return f"Canal Slack #{channel_name} créé avec succès (ID : {data['channel']['id']})."
         else:
             return f"Erreur Slack : {data.get('error')}"
     except Exception as e:
@@ -126,11 +126,11 @@ def tool_node(state: AgentState):
     last_message = messages[-1]
     tool_results = []
     
-    if hasattr(last_message, "tool_calls"):
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         for tool_call in last_message.tool_calls:
             try:
                 tool_name = tool_call["name"]
-                tool_args = tool_call.get("args", {})
+                tool_args = tool_call["args"]
                 
                 if tool_name == "search_agent_memory":
                     result = search_agent_memory.invoke(tool_args)
@@ -142,17 +142,17 @@ def tool_node(state: AgentState):
                     result = create_slack_channel.invoke(tool_args)
                 else:
                     result = f"Outil {tool_name} non reconnu."
-                
+                    
                 tool_results.append(ToolMessage(content=str(result), tool_call_id=tool_call["id"]))
             except Exception as e:
-                tool_results.append(ToolMessage(content=f"ERROR: {str(e)}", tool_call_id=tool_call["id"]))
+                tool_results.append(ToolMessage(content=f"ERREUR : {str(e)}", tool_call_id=tool_call["id"]))
                 
     return {"messages": tool_results}
 
 def reflection_node(state: AgentState):
     messages = state["messages"]
     retry_count = state.get("retry_count", 0) + 1
-    feedback_content = f"[AUTO-CORRECTION TENTATIVE {retry_count}/3] Analyse l'erreur et propose une correction."
+    feedback_content = f"AUTO-CORRECTION TENTATIVE {retry_count}/3: Analyse l'erreur et propose une correction."
     return {
         "messages": [AIMessage(content=feedback_content)],
         "retry_count": retry_count
@@ -168,7 +168,7 @@ def should_continue(state: AgentState):
 def should_reflect_or_continue(state: AgentState):
     retry_count = state.get("retry_count", 0)
     last_message = state["messages"][-1]
-    is_error = isinstance(last_message, ToolMessage) and "ERROR" in last_message.content
+    is_error = isinstance(last_message, ToolMessage) and "ERREUR" in last_message.content
     if is_error and retry_count < 3:
         return "reflect"
     return "agent"
@@ -189,6 +189,55 @@ app_graph = workflow.compile()
 class MissionRequest(BaseModel):
     prompt: str
 
+@app.post("/slack/events")
+async def slack_events(request: Request):
+    """Endpoint pour intercepter et traiter les événements Slack (évite l'erreur 404)."""
+    data = await request.json()
+    
+    if data.get("type") == "url_verification":
+        return {"challenge": data.get("challenge")}
+        
+    event = data.get("event", {})
+    if event.get("type") in ["message", "app_mention"] and not event.get("bot_id"):
+        user_prompt = event.get("text", "")
+        channel_id = event.get("channel", "")
+        
+        try:
+            initial_state = {
+                "messages": [HumanMessage(content=user_prompt)],
+                "retry_count": 0
+            }
+            final_state = app_graph.invoke(initial_state)
+            final_message = final_state["messages"][-1].content
+        except Exception as e:
+            final_message = f"ERREUR D'EXÉCUTION DU DG-CORE : {str(e)}"
+            
+        slack_token = os.getenv("SLACK_BOT_TOKEN")
+        if slack_token:
+            headers = {
+                "Authorization": f"Bearer {slack_token}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "channel": channel_id,
+                "text": final_message
+            }
+            try:
+                httpx.post("https://slack.com/api/chat.postMessage", json=payload, headers=headers)
+            except Exception:
+                pass
+                
+        try:
+            supabase.table("execution_logs").insert({
+                "task": user_prompt,
+                "output": final_message,
+                "status": "success"
+            }).execute()
+        except Exception:
+            pass
+
+    return {"status": "ok"}
+
 @app.post("/run-mission")
 async def run_mission(request: MissionRequest):
     try:
@@ -201,7 +250,7 @@ async def run_mission(request: MissionRequest):
         
         supabase.table("execution_logs").insert({
             "task": request.prompt,
-            "output": {"result": final_message},
+            "output": final_message,
             "status": "success"
         }).execute()
         
