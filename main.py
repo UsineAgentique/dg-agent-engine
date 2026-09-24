@@ -41,8 +41,8 @@ class AgentState(TypedDict):
     messages: List[Any]
     retry_count: int
 
-# 4. Définition des Outils Souverains (Tools)
-@tool
+# 4. Définition des Outils Souverains (Tools) avec nom et description explicites
+@tool(name="search_agent_memory", description="Recherche dans la base vectorielle Supabase les connaissances et compétences des agents.")
 def search_agent_memory(query: str) -> str:
     """Recherche dans la base vectorielle Supabase les connaissances et compétences des agents."""
     try:
@@ -51,7 +51,7 @@ def search_agent_memory(query: str) -> str:
     except Exception as e:
         return f"Erreur lors de la recherche en mémoire : {str(e)}"
 
-@tool
+@tool(name="scrape_web_page", description="Scrape une page web via Firecrawl et retourne son contenu Markdown.")
 def scrape_web_page(url: str) -> str:
     """Scrape une page web via Firecrawl et retourne son contenu Markdown."""
     try:
@@ -64,7 +64,7 @@ def scrape_web_page(url: str) -> str:
     except Exception as e:
         return f"Erreur Firecrawl : {str(e)}"
 
-@tool
+@tool(name="run_code_sandbox", description="Exécute du code Python dans un bac à sable sécurisé E2B.")
 def run_code_sandbox(code: str) -> str:
     """Exécute du code Python dans un bac à sable sécurisé E2B."""
     try:
@@ -74,7 +74,7 @@ def run_code_sandbox(code: str) -> str:
     except Exception as e:
         return f"Erreur E2B Sandbox : {str(e)}"
 
-@tool
+@tool(name="create_slack_channel", description="Crée un nouveau canal Slack public dédié à une mission.")
 def create_slack_channel(channel_name: str) -> str:
     """Crée un nouveau canal Slack public dédié à une mission."""
     slack_token = os.getenv("SLACK_BOT_TOKEN")
