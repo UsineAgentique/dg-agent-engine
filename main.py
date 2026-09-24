@@ -1,153 +1,110 @@
 import os
-import httpx
-from fastapi import FastAPI, HTTPException, Request
+from typing import TypedDict, Annotated, List
+import operator
+from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
-from supabase import create_client, Client
-from langgraph.graph import StateGraph, END
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
-from langchain_groq import ChatGroq
 from langchain_core.tools import tool
-from apscheduler.schedulers.background import BackgroundScheduler
-from e2b_code_interpreter import Sandbox
-from firecrawl import FirecrawlApp
-from typing import TypedDict, List, Any
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langgraph.graph import StateGraph, END
+from langgraph.prebuilt import ToolNode
+from langchain_groq import ChatGroq
+import httpx
+from supabase import create_client, Client
 
-# 1. Initialisation de l'application FastAPI
-app = FastAPI(
-    title="DG-Core Sovereign Engine",
-    description="Noyau autonome de pilotage multi-agents",
-    version="2.3.0"
-)
+app = FastAPI(title="DG-AGENT-CORE", version="1.0.0")
 
-# 2. Récupération sécurisée des variables d'environnement
+# Initialisation des accès sécurisés via l'environnement Render
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY else None
 
-if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-    raise RuntimeError("Erreur critique : Les variables Supabase sont manquantes.")
+# ==========================================
+# 1. OUTILS D'INFRASTRUCTURE ET DE MAINTENANCE
+# ==========================================
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+@tool
+def clean_system_database() -> str:
+    """Nettoie complètement les tables `execution_logs` et `agent_memory` sur Supabase en utilisant les credentials sécurisés."""
+    try:
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        
+        if not url or not key:
+            return "ERREUR : Les variables d'environnement Supabase ne sont pas configurées sur le serveur."
 
-# Restauration du modèle exact validé : openai/gpt-oss-120b
-llm_dg = ChatGroq(
-    model="openai/gpt-oss-120b",
-    temperature=0.2,
-    groq_api_key=GROQ_API_KEY
-)
+        headers = {
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "Prefer": "return=representation"
+        }
 
-# 3. Définition de l'État Global (AgentState)
+        with httpx.Client() as client:
+            resp_logs = client.delete(f"{url}/rest/v1/execution_logs?id=not.is.null", headers=headers)
+            resp_memory = client.delete(f"{url}/rest/v1/agent_memory?id=not.is.null", headers=headers)
+
+        if resp_logs.status_code in [200, 204] and resp_memory.status_code in [200, 204]:
+            return "Succès : Les tables `execution_logs` et `agent_memory` ont été purgées avec succès. État du système propre (Clean State)."
+        else:
+            return f"Erreur lors de la purge Supabase. Logs status: {resp_logs.status_code}, Memory status: {resp_memory.status_code}"
+            
+    except Exception as e:
+        return f"ERREUR TECHNIQUE LORS DU NETTOYAGE : {str(e)}"
+
+@tool
+def inspect_infrastructure_health() -> str:
+    """Vérifie l'état de santé global de l'infrastructure (Supabase, Render, connectivité)."""
+    status_report = []
+    
+    try:
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        headers = {"apikey": key, "Authorization": f"Bearer {key}"}
+        resp = httpx.get(f"{url}/rest/v1/execution_logs?select=count", headers=headers, timeout=5.0)
+        if resp.status_code == 200:
+            status_report.append("Supabase DB : OPÉRATIONNEL (Connecté)")
+        else:
+            status_report.append(f"Supabase DB : ERREUR (Statut {resp.status_code})")
+    except Exception as e:
+        status_report.append(f"Supabase DB : INACCESSIBLE ({str(e)})")
+
+    slack_token = os.getenv("SLACK_BOT_TOKEN")
+    if slack_token and slack_token.startswith("xoxb-"):
+        status_report.append("Slack Bot Token : CONFIGURÉ et au bon format")
+    else:
+        status_report.append("Slack Bot Token : MANQUANT ou format invalide")
+
+    return "\n".join(status_report)
+
+@tool
+def execute_system_maintenance_command(command_type: str) -> str:
+    """Exécute une commande de maintenance de bas niveau sur l'infrastructure (purge, reset des logs ou optimisation)."""
+    if command_type == "purge_logs":
+        return clean_system_database.invoke({})
+    elif command_type == "diagnostic_system":
+        return inspect_infrastructure_health.invoke({})
+    return f"Commande de maintenance '{command_type}' non reconnue."
+
+# Ensemble des outils liés au modèle pour lui donner l'autonomie totale
+tools = [clean_system_database, inspect_infrastructure_health, execute_system_maintenance_command]
+
+# ==========================================
+# 2. CONFIGURATION DU MODÈLE ET DU GRAPHE
+# ==========================================
+
 class AgentState(TypedDict):
-    messages: List[Any]
+    messages: Annotated[List, operator.add]
     retry_count: int
 
-# 4. Définition des Outils Souverains (Tools) avec syntaxe standard LangChain
-@tool
-def search_agent_memory(query: str) -> str:
-    """Recherche dans la base vectorielle Supabase les connaissances et compétences des agents."""
-    try:
-        response = supabase.table("agent_memory").select("content, metadata").limit(5).execute()
-        return str(response.data)
-    except Exception as e:
-        return f"Erreur lors de la recherche en mémoire : {str(e)}"
+llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
+llm_with_tools = llm.bind_tools(tools)
 
-@tool
-def scrape_web_page(url: str) -> str:
-    """Scrape une page web via Firecrawl et retourne son contenu Markdown."""
-    try:
-        api_key = os.getenv("FIRECRAWL_API_KEY")
-        if not api_key:
-            return "Erreur : FIRECRAWL_API_KEY manquante."
-        app_fc = FirecrawlApp(api_key=api_key)
-        result = app_fc.scrape_url(url, params={'formats': ['markdown']})
-        return result.get('markdown', 'Contenu non trouvé')
-    except Exception as e:
-        return f"Erreur Firecrawl : {str(e)}"
-
-@tool
-def run_code_sandbox(code: str) -> str:
-    """Exécute du code Python dans un bac à sable sécurisé E2B."""
-    try:
-        with Sandbox() as sandbox:
-            execution = sandbox.run_code(code)
-            return str(execution.logs)
-    except Exception as e:
-        return f"Erreur E2B Sandbox : {str(e)}"
-
-@tool
-def create_slack_channel(channel_name: str) -> str:
-    """Crée un nouveau canal Slack public dédié à une mission."""
-    slack_token = os.getenv("SLACK_BOT_TOKEN")
-    if not slack_token:
-        return "Erreur : SLACK_BOT_TOKEN manquant."
-    
-    url = "https://slack.com/api/conversations.create"
-    headers = {
-        "Authorization": f"Bearer {slack_token}",
-        "Content-Type": "application/json"
-    }
-    payload = {"name": channel_name}
-    try:
-        response = httpx.post(url, json=payload, headers=headers)
-        data = response.json()
-        if data.get("ok"):
-            return f"Canal Slack #{channel_name} créé avec succès (ID : {data['channel']['id']})."
-        else:
-            return f"Erreur Slack : {data.get('error')}"
-    except Exception as e:
-        return f"Erreur technique Slack : {str(e)}"
-
-tools = [search_agent_memory, scrape_web_page, run_code_sandbox, create_slack_channel]
-llm_dg_with_tools = llm_dg.bind_tools(tools)
-
-# 5. Planificateur Proactif (APScheduler)
-def proactive_dg_routine():
-    print("[DG-CORE PROACTIVITÉ] Routine de fond lancée.")
-
-scheduler = BackgroundScheduler()
-scheduler.add_job(proactive_dg_routine, 'interval', hours=2)
-
-@app.on_event("startup")
-async def startup_event():
-    scheduler.start()
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    scheduler.shutdown()
-
-# 6. Nœuds du Graphe LangGraph
 def call_model(state: AgentState):
     messages = state["messages"]
-    response = llm_dg_with_tools.invoke(messages)
+    response = llm_with_tools.invoke(messages)
     return {"messages": [response]}
 
-def tool_node(state: AgentState):
-    messages = state["messages"]
-    last_message = messages[-1]
-    tool_results = []
-    
-    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-        for tool_call in last_message.tool_calls:
-            try:
-                tool_name = tool_call["name"]
-                tool_args = tool_call["args"]
-                
-                if tool_name == "search_agent_memory":
-                    result = search_agent_memory.invoke(tool_args)
-                elif tool_name == "scrape_web_page":
-                    result = scrape_web_page.invoke(tool_args)
-                elif tool_name == "run_code_sandbox":
-                    result = run_code_sandbox.invoke(tool_args)
-                elif tool_name == "create_slack_channel":
-                    result = create_slack_channel.invoke(tool_args)
-                else:
-                    result = f"Outil {tool_name} non reconnu."
-                    
-                tool_results.append(ToolMessage(content=str(result), tool_call_id=tool_call["id"]))
-            except Exception as e:
-                tool_results.append(ToolMessage(content=f"ERREUR : {str(e)}", tool_call_id=tool_call["id"]))
-                
-    return {"messages": tool_results}
+tool_node = ToolNode(tools)
 
 def reflection_node(state: AgentState):
     messages = state["messages"]
@@ -158,7 +115,6 @@ def reflection_node(state: AgentState):
         "retry_count": retry_count
     }
 
-# 7. Routage Conditionnel
 def should_continue(state: AgentState):
     last_message = state["messages"][-1]
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
@@ -185,13 +141,16 @@ workflow.add_edge("reflect", "agent")
 
 app_graph = workflow.compile()
 
-# 8. Endpoints FastAPI
+# ==========================================
+# 3. ENDPOINTS FASTAPI
+# ==========================================
+
 class MissionRequest(BaseModel):
     prompt: str
 
 @app.post("/slack/events")
 async def slack_events(request: Request):
-    """Endpoint pour intercepter et traiter les événements Slack (évite l'erreur 404)."""
+    """Endpoint pour intercepter et traiter les événements Slack."""
     data = await request.json()
     
     if data.get("type") == "url_verification":
@@ -227,14 +186,15 @@ async def slack_events(request: Request):
             except Exception:
                 pass
                 
-        try:
-            supabase.table("execution_logs").insert({
-                "task": user_prompt,
-                "output": final_message,
-                "status": "success"
-            }).execute()
-        except Exception:
-            pass
+        if supabase:
+            try:
+                supabase.table("execution_logs").insert({
+                    "task": user_prompt,
+                    "output": final_message,
+                    "status": "success"
+                }).execute()
+            except Exception:
+                pass
 
     return {"status": "ok"}
 
@@ -248,11 +208,12 @@ async def run_mission(request: MissionRequest):
         final_state = app_graph.invoke(initial_state)
         final_message = final_state["messages"][-1].content
         
-        supabase.table("execution_logs").insert({
-            "task": request.prompt,
-            "output": final_message,
-            "status": "success"
-        }).execute()
+        if supabase:
+            supabase.table("execution_logs").insert({
+                "task": request.prompt,
+                "output": final_message,
+                "status": "success"
+            }).execute()
         
         return {
             "status": "success",
@@ -270,5 +231,5 @@ async def health_check():
 async def get_active_model():
     return {
         "dg_model": "openai/gpt-oss-120b",
-        "tools_integrated": ["firecrawl", "e2b", "supabase", "slack_channels"]
+        "tools_integrated": [t.name for t in tools]
     }
