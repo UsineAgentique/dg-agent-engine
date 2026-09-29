@@ -4,14 +4,26 @@ import operator
 from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
 from langchain_core.tools import tool
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langchain_groq import ChatGroq
 import httpx
 from supabase import create_client, Client
 
-app = FastAPI(title="DG-AGENT-CORE", version="1.0.0")
+app = FastAPI(title="DG-AGENT-CORE", version="2.0.0")
+
+# ==========================================
+# 0. CHARGEMENT DYNAMIQUE DU CERVEAU (dg_system.md)
+# ==========================================
+SYSTEM_PROMPT = "Tu es le Directeur Général (DG) et Méta-Architecte d'une structure technologique de pointe."
+if os.path.exists("dg_system.md"):
+    try:
+        with open("dg_system.md", "r", encoding="utf-8") as f:
+            SYSTEM_PROMPT = f.read()
+        print("Succès : Fichier dg_system.md chargé comme System Prompt exécutif.")
+    except Exception as e:
+        print(f"Alerte : Impossible de lire dg_system.md ({e})")
 
 # Initialisation des accès sécurisés via l'environnement Render
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -85,11 +97,84 @@ def execute_system_maintenance_command(command_type: str) -> str:
         return inspect_infrastructure_health.invoke({})
     return f"Commande de maintenance '{command_type}' non reconnue."
 
-# Ensemble des outils liés au modèle pour lui donner l'autonomie totale
-tools = [clean_system_database, inspect_infrastructure_health, execute_system_maintenance_command]
 
 # ==========================================
-# 2. CONFIGURATION DU MODÈLE ET DU GRAPHE
+# 2. OUTILS D'AUTONOMIE WORKSPACE & SOUS-AGENTS
+# ==========================================
+
+@tool
+def explore_workspace_directory(directory_path: str = ".") -> str:
+    """Permet à Amal DG de cartographier l'arborescence des fichiers et sous-agents disponibles dans le projet."""
+    try:
+        structure = []
+        for root, dirs, files in os.walk(directory_path):
+            if ".git" in root or "__pycache__" in root or "venv" in root:
+                continue
+            level = root.replace(directory_path, "").count(os.sep)
+            indent = " " * 4 * level
+            structure.append(f"{indent}{os.path.basename(root)}/")
+            sub_indent = " " * 4 * (level + 1)
+            for f in files:
+                if f.endswith((".md", ".py", ".yaml", ".json")):
+                    structure.append(f"{sub_indent}{f}")
+        return "\n".join(structure) if structure else "Espace de travail vide."
+    except Exception as e:
+        return f"ERREUR LORS DE L'EXPLORATION : {str(e)}"
+
+@tool
+def read_workspace_file(file_path: str) -> str:
+    """Permet à Amal DG de lire le contenu exact d'un sous-agent (.md) ou d'un fichier de configuration."""
+    try:
+        safe_path = os.path.normpath(file_path)
+        if not os.path.exists(safe_path):
+            return f"ERREUR : Le fichier '{file_path}' est introuvable."
+        with open(safe_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        return f"--- CONTENU DE {file_path} ---\n{content}"
+    except Exception as e:
+        return f"ERREUR LORS DE LA LECTURE : {str(e)}"
+
+@tool
+def write_or_improve_agent_skill(file_path: str, content: str) -> str:
+    """Permet à Amal DG de créer un nouveau sous-agent, de rédiger une skill ou d'améliorer ses propres instructions."""
+    try:
+        safe_path = os.path.normpath(file_path)
+        directory = os.path.dirname(safe_path)
+        if directory and not os.path.exists(directory):
+            os.makedirs(directory, exist_ok=True)
+            
+        with open(safe_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return f"SUCCÈS : Le sous-agent/skill '{file_path}' a été écrit ou mis à jour avec succès."
+    except Exception as e:
+        return f"ERREUR LORS DE L'ÉCRITURE : {str(e)}"
+
+@tool
+def remove_obsolete_component(file_path: str) -> str:
+    """Permet à Amal DG de supprimer un fichier ou un sous-agent devenu inutile ou obsolète."""
+    try:
+        safe_path = os.path.normpath(file_path)
+        if os.path.exists(safe_path):
+            os.remove(safe_path)
+            return f"SUCCÈS : '{file_path}' a été supprimé du système."
+        return f"AVERTISSEMENT : Le fichier '{file_path}' n'existe pas."
+    except Exception as e:
+        return f"ERREUR LORS DE LA SUPPRESSION : {str(e)}"
+
+# Ensemble complet et unifié des outils mis à disposition du modèle
+tools = [
+    clean_system_database,
+    inspect_infrastructure_health,
+    execute_system_maintenance_command,
+    explore_workspace_directory,
+    read_workspace_file,
+    write_or_improve_agent_skill,
+    remove_obsolete_component
+]
+
+
+# ==========================================
+# 3. CONFIGURATION DU MODÈLE ET DU GRAPHE
 # ==========================================
 
 class AgentState(TypedDict):
@@ -100,7 +185,10 @@ llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 llm_with_tools = llm.bind_tools(tools)
 
 def call_model(state: AgentState):
-    messages = state["messages"]
+    # Injection prioritaire du rôle DG défini dans dg_system.md comme System Prompt
+    system_message = SystemMessage(content=SYSTEM_PROMPT)
+    messages = [system_message] + state["messages"]
+    
     response = llm_with_tools.invoke(messages)
     return {"messages": [response]}
 
@@ -141,8 +229,9 @@ workflow.add_edge("reflect", "agent")
 
 app_graph = workflow.compile()
 
+
 # ==========================================
-# 3. ENDPOINTS FASTAPI
+# 4. ENDPOINTS FASTAPI
 # ==========================================
 
 class MissionRequest(BaseModel):
@@ -225,11 +314,16 @@ async def run_mission(request: MissionRequest):
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "service": "DG-AGENT-CORE"}
+    return {
+        "status": "healthy",
+        "service": "DG-AGENT-CORE",
+        "dg_system_loaded": os.path.exists("dg_system.md")
+    }
 
 @app.get("/model")
 async def get_active_model():
     return {
         "dg_model": "openai/gpt-oss-120b",
-        "tools_integrated": [t.name for t in tools]
+        "tools_integrated": [t.name for t in tools],
+        "system_prompt_source": "dg_system.md"
     }
