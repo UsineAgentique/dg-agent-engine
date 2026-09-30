@@ -25,10 +25,10 @@ if os.path.exists("dg_system.md"):
     except Exception as e:
         print(f"Alerte : Impossible de lire dg_system.md ({e})")
 
-# Initialisation des accès sécurisés via l'environnement Render
-SUPABASE_URL = os.getenv("SUPABASE_URL")
+# Initialisation sécurisée (URL en dur pour éliminer les erreurs de variable Render)
+SUPABASE_URL = "https://qiwdenzxtawkrrnkwoar.supabase.co"
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY else None
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) if SUPABASE_SERVICE_ROLE_KEY else None
 
 # ==========================================
 # 1. OUTILS D'INFRASTRUCTURE ET DE MAINTENANCE
@@ -38,11 +38,11 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) if SUP
 def clean_system_database() -> str:
     """Nettoie complètement les tables `execution_logs` et `agent_memory` sur Supabase et consigne l'action dans `missions_log`."""
     try:
-        url = os.getenv("SUPABASE_URL")
+        url = "https://qiwdenzxtawkrrnkwoar.supabase.co"
         key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
         
-        if not url or not key:
-            return "ERREUR : Les variables d'environnement Supabase ne sont pas configurées sur le serveur."
+        if not key:
+            return "ERREUR : La clé Supabase (SUPABASE_SERVICE_ROLE_KEY) n'est pas configurée sur le serveur."
 
         headers = {
             "apikey": key,
@@ -78,7 +78,7 @@ def inspect_infrastructure_health() -> str:
     status_report = []
     
     try:
-        url = os.getenv("SUPABASE_URL")
+        url = "https://qiwdenzxtawkrrnkwoar.supabase.co"
         key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
         headers = {"apikey": key, "Authorization": f"Bearer {key}"}
         resp = httpx.get(f"{url}/rest/v1/execution_logs?select=count", headers=headers, timeout=5.0)
