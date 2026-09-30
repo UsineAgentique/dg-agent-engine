@@ -25,8 +25,8 @@ if os.path.exists("dg_system.md"):
     except Exception as e:
         print(f"Alerte : Impossible de lire dg_system.md ({e})")
 
-# Initialisation sécurisée (URL en dur pour éliminer les erreurs de variable Render)
-SUPABASE_URL = "https://qiwdenzxtawkrrnkwoar.supabase.co"
+# Initialisation sécurisée avec la bonne URL Supabase
+SUPABASE_URL = "https://qiwqenzxtawkrnknkoar.supabase.co"
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) if SUPABASE_SERVICE_ROLE_KEY else None
 
@@ -38,7 +38,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) if SUP
 def clean_system_database() -> str:
     """Nettoie complètement les tables `execution_logs` et `agent_memory` sur Supabase et consigne l'action dans `missions_log`."""
     try:
-        url = "https://qiwdenzxtawkrrnkwoar.supabase.co"
+        url = "https://qiwqenzxtawkrnknkoar.supabase.co"
         key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
         
         if not key:
@@ -78,7 +78,7 @@ def inspect_infrastructure_health() -> str:
     status_report = []
     
     try:
-        url = "https://qiwdenzxtawkrrnkwoar.supabase.co"
+        url = "https://qiwqenzxtawkrnknkoar.supabase.co"
         key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
         headers = {"apikey": key, "Authorization": f"Bearer {key}"}
         resp = httpx.get(f"{url}/rest/v1/execution_logs?select=count", headers=headers, timeout=5.0)
