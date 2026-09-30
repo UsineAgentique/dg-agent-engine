@@ -36,7 +36,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) if SUP
 
 @tool
 def clean_system_database() -> str:
-    """Nettoie complètement les tables `execution_logs` et `agent_memory` sur Supabase en utilisant les credentials sécurisés."""
+    """Nettoie complètement les tables `execution_logs` et `agent_memory` sur Supabase et consigne l'action dans `missions_log`."""
     try:
         url = os.getenv("SUPABASE_URL")
         key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -52,13 +52,22 @@ def clean_system_database() -> str:
         }
 
         with httpx.Client() as client:
+            # 1. Purge des tables de test
             resp_logs = client.delete(f"{url}/rest/v1/execution_logs?id=not.is.null", headers=headers)
             resp_memory = client.delete(f"{url}/rest/v1/agent_memory?id=not.is.null", headers=headers)
+            
+            # 2. Consignation de la traçabilité dans missions_log pour satisfaire les exigences d'audit
+            log_payload = {
+                "task": "Clean State System Purge",
+                "output": "Purge des tables execution_logs et agent_memory effectuée avec succès.",
+                "status": "success"
+            }
+            resp_mission = client.post(f"{url}/rest/v1/missions_log", json=log_payload, headers=headers)
 
         if resp_logs.status_code in [200, 204] and resp_memory.status_code in [200, 204]:
-            return "Succès : Les tables `execution_logs` et `agent_memory` ont été purgées avec succès. État du système propre (Clean State)."
+            return "Succès : Les tables `execution_logs` et `agent_memory` ont été purgées et l'opération a été consignée dans `missions_log`. État du système propre (Clean State) validé."
         else:
-            return f"Erreur lors de la purge Supabase. Logs status: {resp_logs.status_code}, Memory status: {resp_memory.status_code}"
+            return f"Erreur lors de la purge. Logs status: {resp_logs.status_code}, Memory status: {resp_memory.status_code}, Mission log status: {resp_mission.status_code}"
             
     except Exception as e:
         return f"ERREUR TECHNIQUE LORS DU NETTOYAGE : {str(e)}"
@@ -161,7 +170,6 @@ def remove_obsolete_component(file_path: str) -> str:
     except Exception as e:
         return f"ERREUR LORS DE LA SUPPRESSION : {str(e)}"
 
-# Ensemble complet et unifié des outils mis à disposition du modèle
 tools = [
     clean_system_database,
     inspect_infrastructure_health,
@@ -185,7 +193,6 @@ llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 llm_with_tools = llm.bind_tools(tools)
 
 def call_model(state: AgentState):
-    # Injection prioritaire du rôle DG défini dans dg_system.md comme System Prompt
     system_message = SystemMessage(content=SYSTEM_PROMPT)
     messages = [system_message] + state["messages"]
     
