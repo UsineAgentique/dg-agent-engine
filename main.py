@@ -1,5 +1,7 @@
 import os
-import importlib.util
+import sys
+import json
+import subprocess
 from typing import TypedDict, Annotated, List
 import operator
 from fastapi import FastAPI, Request, HTTPException
@@ -12,7 +14,7 @@ from langchain_groq import ChatGroq
 import httpx
 from supabase import create_client, Client
 
-app = FastAPI(title="DG-AGENT-CORE", version="2.0.0")
+app = FastAPI(title="DG-AGENT-CORE", version="2.5.0")
 
 # ==========================================
 # 0. CHARGEMENT DYNAMIQUE DU CERVEAU (dg_system.md)
@@ -26,8 +28,8 @@ if os.path.exists("dg_system.md"):
     except Exception as e:
         print(f"Alerte : Impossible de lire dg_system.md ({e})")
 
-# Initialisation sécurisée avec la bonne URL Supabase
-SUPABASE_URL = "https://qiwqenzxtawkrnknkoar.supabase.co"
+# Initialisation Supabase
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://qiwqenzxtawkrnknkoar.supabase.co")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) if SUPABASE_SERVICE_ROLE_KEY else None
 
@@ -39,7 +41,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) if SUP
 def clean_system_database() -> str:
     """Nettoie complètement les tables `execution_logs` et `agent_memory` sur Supabase et consigne l'action dans `missions_log`."""
     try:
-        url = "https://qiwqenzxtawkrnknkoar.supabase.co"
+        url = SUPABASE_URL
         key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
         
         if not key:
@@ -53,11 +55,9 @@ def clean_system_database() -> str:
         }
 
         with httpx.Client() as client:
-            # 1. Purge des tables de test
             resp_logs = client.delete(f"{url}/rest/v1/execution_logs?id=not.is.null", headers=headers)
             resp_memory = client.delete(f"{url}/rest/v1/agent_memory?id=not.is.null", headers=headers)
             
-            # 2. Consignation de la traçabilité dans missions_log pour satisfaire les exigences d'audit
             log_payload = {
                 "task": "Clean State System Purge",
                 "output": "Purge des tables execution_logs et agent_memory effectuée avec succès.",
@@ -66,23 +66,22 @@ def clean_system_database() -> str:
             resp_mission = client.post(f"{url}/rest/v1/missions_log", json=log_payload, headers=headers)
 
         if resp_logs.status_code in [200, 204] and resp_memory.status_code in [200, 204]:
-            return "Succès : Les tables `execution_logs` et `agent_memory` ont été purgées et l'opération a été consignée dans `missions_log`. État du système propre (Clean State) validé."
+            return "Succès : Purge validée et consignée dans `missions_log`. État du système propre (Clean State) validé."
         else:
-            return f"Erreur lors de la purge. Logs status: {resp_logs.status_code}, Memory status: {resp_memory.status_code}, Mission log status: {resp_mission.status_code}"
+            return f"Erreur lors de la purge. Logs status: {resp_logs.status_code}, Memory status: {resp_memory.status_code}"
             
     except Exception as e:
         return f"ERREUR TECHNIQUE LORS DU NETTOYAGE : {str(e)}"
 
 @tool
 def inspect_infrastructure_health() -> str:
-    """Vérifie l'état de santé global de l'infrastructure (Supabase, Render, connectivité)."""
+    """Vérifie l'état de santé global de l'infrastructure (Supabase, Slack, Clés API)."""
     status_report = []
     
     try:
-        url = "https://qiwqenzxtawkrnknkoar.supabase.co"
         key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
         headers = {"apikey": key, "Authorization": f"Bearer {key}"}
-        resp = httpx.get(f"{url}/rest/v1/execution_logs?select=count", headers=headers, timeout=5.0)
+        resp = httpx.get(f"{SUPABASE_URL}/rest/v1/execution_logs?select=count", headers=headers, timeout=5.0)
         if resp.status_code == 200:
             status_report.append("Supabase DB : OPÉRATIONNEL (Connecté)")
         else:
@@ -92,7 +91,7 @@ def inspect_infrastructure_health() -> str:
 
     slack_token = os.getenv("SLACK_BOT_TOKEN")
     if slack_token and slack_token.startswith("xoxb-"):
-        status_report.append("Slack Bot Token : CONFIGURÉ et au bon format")
+        status_report.append("Slack Bot Token : CONFIGURÉ et valide")
     else:
         status_report.append("Slack Bot Token : MANQUANT ou format invalide")
 
@@ -100,7 +99,7 @@ def inspect_infrastructure_health() -> str:
 
 @tool
 def execute_system_maintenance_command(command_type: str) -> str:
-    """Exécute une commande de maintenance de bas niveau sur l'infrastructure (purge, reset des logs ou optimisation)."""
+    """Exécute une commande de maintenance de bas niveau sur l'infrastructure."""
     if command_type == "purge_logs":
         return clean_system_database.invoke({})
     elif command_type == "diagnostic_system":
@@ -109,12 +108,12 @@ def execute_system_maintenance_command(command_type: str) -> str:
 
 
 # ==========================================
-# 2. OUTILS D'AUTONOMIE WORKSPACE & SOUS-AGENTS
+# 2. OUTILS WORKSPACE & EXÉCUTION ISOLÉE (SUBPROCESS)
 # ==========================================
 
 @tool
 def explore_workspace_directory(directory_path: str = ".") -> str:
-    """Permet à Amal DG de cartographier l'arborescence des fichiers et sous-agents disponibles dans le projet."""
+    """Permet à Amal DG de cartographier l'arborescence des fichiers et sous-agents disponibles."""
     try:
         structure = []
         for root, dirs, files in os.walk(directory_path):
@@ -133,7 +132,7 @@ def explore_workspace_directory(directory_path: str = ".") -> str:
 
 @tool
 def read_workspace_file(file_path: str) -> str:
-    """Permet à Amal DG de lire le contenu exact d'un sous-agent (.md, .py) ou d'un fichier de configuration."""
+    """Permet à Amal DG de lire le contenu exact d'un sous-agent (.py, .md) ou d'un fichier de configuration."""
     try:
         safe_path = os.path.normpath(file_path)
         if not os.path.exists(safe_path):
@@ -146,7 +145,7 @@ def read_workspace_file(file_path: str) -> str:
 
 @tool
 def write_or_improve_agent_skill(file_path: str, content: str) -> str:
-    """Permet à Amal DG de créer un nouveau sous-agent, de rédiger une skill ou d'améliorer ses propres instructions."""
+    """Permet à Amal DG de créer un nouveau sous-agent Python ou d'améliorer des instructions."""
     try:
         safe_path = os.path.normpath(file_path)
         directory = os.path.dirname(safe_path)
@@ -155,13 +154,13 @@ def write_or_improve_agent_skill(file_path: str, content: str) -> str:
             
         with open(safe_path, "w", encoding="utf-8") as f:
             f.write(content)
-        return f"SUCCÈS : Le sous-agent/skill '{file_path}' a été écrit ou mis à jour avec succès."
+        return f"SUCCÈS : Le composant '{file_path}' a été écrit ou mis à jour avec succès."
     except Exception as e:
         return f"ERREUR LORS DE L'ÉCRITURE : {str(e)}"
 
 @tool
 def remove_obsolete_component(file_path: str) -> str:
-    """Permet à Amal DG de supprimer un fichier ou un sous-agent devenu inutile ou obsolète."""
+    """Permet à Amal DG de supprimer un fichier ou sous-agent devenu obsolète."""
     try:
         safe_path = os.path.normpath(file_path)
         if os.path.exists(safe_path):
@@ -173,29 +172,58 @@ def remove_obsolete_component(file_path: str) -> str:
 
 @tool
 def execute_subagent(agent_name: str, mission: str) -> str:
-    """Exécute un sous-agent/pôle autonome situé dans le dossier 'agents/'.
-    Exemple : agent_name='pole_dev', mission='Écrire le script d'un scraper'
+    """Exécute un sous-agent autonome situé dans 'agents/' de manière totalement isolée (Subprocess).
+    Empêche tout crash du serveur principal en cas d'erreur ou de dépassement de temps.
     """
     try:
         os.makedirs("agents", exist_ok=True)
-        clean_name = agent_name.replace(".py", "").strip()
+        clean_name = os.path.basename(agent_name).replace(".py", "").strip()
         file_path = os.path.join("agents", f"{clean_name}.py")
 
         if not os.path.exists(file_path):
-            return f"ERREUR : Le sous-agent '{clean_name}' n'existe pas dans le dossier 'agents/'. Tu dois d'abord le créer avec 'write_or_improve_agent_skill'."
+            return f"ERREUR : Le sous-agent '{clean_name}' n'existe pas dans 'agents/'. Crée-le d'abord avec 'write_or_improve_agent_skill'."
 
-        spec = importlib.util.spec_from_file_location(clean_name, file_path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        # Code d'exécution runner isolé
+        runner_code = f"""
+import sys
+import json
+import importlib.util
 
-        if hasattr(module, "run_mission"):
-            result = module.run_mission(mission)
-            return f"--- RÉSULTAT EXÉCUTÉ PAR LE SOUS-AGENT ({clean_name}) ---\n{result}"
+try:
+    spec = importlib.util.spec_from_file_location("subagent", {json.dumps(file_path)})
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    
+    if hasattr(module, "run_mission"):
+        res = module.run_mission({json.dumps(mission)})
+        print(json.dumps({{"status": "success", "result": res}}))
+    else:
+        print(json.dumps({{"status": "error", "error": "La fonction run_mission(mission) est introuvable dans le module."}}))
+except Exception as e:
+        print(json.dumps({{"status": "error", "error": str(e)}}))
+"""
+
+        # Exécution dans un sous-processus dédié avec timeout de 90 secondes
+        process = subprocess.run(
+            [sys.executable, "-c", runner_code],
+            capture_output=True,
+            text=True,
+            timeout=90
+        )
+
+        if process.returncode != 0:
+            return f"ERREUR CRITIQUE SUBPROCESS (Code {process.returncode}) :\n{process.stderr}"
+
+        output_data = json.loads(process.stdout.strip())
+        if output_data.get("status") == "success":
+            return f"--- RÉSULTAT EXÉCUTÉ PAR LE SOUS-AGENT ({clean_name}) ---\n{output_data.get('result')}"
         else:
-            return f"ERREUR : Le fichier '{clean_name}.py' doit contenir une fonction 'run_mission(mission: str)'."
+            return f"ERREUR DU SOUS-AGENT : {output_data.get('error')}"
 
+    except subprocess.TimeoutExpired:
+        return f"ALERTE TIMEOUT : Le sous-agent '{clean_name}' a été interrompu car son exécution a dépassé 90 secondes."
     except Exception as e:
-        return f"ERREUR TECHNIQUE LORS DE L'EXÉCUTION DU SOUS-AGENT '{agent_name}' : {str(e)}"
+        return f"ERREUR DE PILOTAGE SYSTEME : {str(e)}"
 
 tools = [
     clean_system_database,
@@ -223,16 +251,14 @@ llm_with_tools = llm.bind_tools(tools)
 def call_model(state: AgentState):
     system_message = SystemMessage(content=SYSTEM_PROMPT)
     messages = [system_message] + state["messages"]
-    
     response = llm_with_tools.invoke(messages)
     return {"messages": [response]}
 
 tool_node = ToolNode(tools)
 
 def reflection_node(state: AgentState):
-    messages = state["messages"]
     retry_count = state.get("retry_count", 0) + 1
-    feedback_content = f"AUTO-CORRECTION TENTATIVE {retry_count}/3: Analyse l'erreur et propose une correction."
+    feedback_content = f"AUTO-CORRECTION TENTATIVE {retry_count}/3: Analyse l'erreur technique rencontrée et corrige ta stratégie."
     return {
         "messages": [AIMessage(content=feedback_content)],
         "retry_count": retry_count
@@ -247,7 +273,7 @@ def should_continue(state: AgentState):
 def should_reflect_or_continue(state: AgentState):
     retry_count = state.get("retry_count", 0)
     last_message = state["messages"][-1]
-    is_error = isinstance(last_message, ToolMessage) and "ERREUR" in last_message.content
+    is_error = isinstance(last_message, ToolMessage) and "ERREUR" in str(last_message.content)
     if is_error and retry_count < 3:
         return "reflect"
     return "agent"
@@ -274,7 +300,7 @@ class MissionRequest(BaseModel):
 
 @app.post("/slack/events")
 async def slack_events(request: Request):
-    """Endpoint pour intercepter, charger la mémoire et traiter les événements Slack."""
+    """Endpoint Slack avec mémoire isolée par canal (channel_id)."""
     data = await request.json()
     
     if data.get("type") == "url_verification":
@@ -285,12 +311,13 @@ async def slack_events(request: Request):
         user_prompt = event.get("text", "")
         channel_id = event.get("channel", "")
         
-        # --- CHARGEMENT DE LA MÉMOIRE DE CONVERSATION ---
+        # --- MÉMOIRE ISOLÉE PAR CANAL SLACK ---
         conversation_history = []
-        if supabase:
+        if supabase and channel_id:
             try:
                 res = supabase.table("execution_logs") \
                     .select("task, output") \
+                    .eq("channel_id", channel_id) \
                     .order("created_at", desc=True) \
                     .limit(5) \
                     .execute()
@@ -303,7 +330,7 @@ async def slack_events(request: Request):
                         if log.get("output"):
                             conversation_history.append(AIMessage(content=log["output"]))
             except Exception as e:
-                print(f"Alerte : Impossible de charger la mémoire ({e})")
+                print(f"Alerte : Erreur lecture mémoire canal ({e})")
         
         conversation_history.append(HumanMessage(content=user_prompt))
         
@@ -315,8 +342,9 @@ async def slack_events(request: Request):
             final_state = app_graph.invoke(initial_state)
             final_message = final_state["messages"][-1].content
         except Exception as e:
-            final_message = f"ERREUR D'EXÉCUTION DU DG-CORE : {str(e)}"
+            final_message = f"ERREUR EXÉCUTION DG-CORE : {str(e)}"
             
+        # Envoi de la réponse sur Slack
         slack_token = os.getenv("SLACK_BOT_TOKEN")
         if slack_token:
             headers = {
@@ -332,9 +360,11 @@ async def slack_events(request: Request):
             except Exception:
                 pass
                 
+        # Sauvegarde en BDD avec tag du canal Slack
         if supabase:
             try:
                 supabase.table("execution_logs").insert({
+                    "channel_id": channel_id,
                     "task": user_prompt,
                     "output": final_message,
                     "status": "success"
@@ -382,5 +412,5 @@ async def get_active_model():
     return {
         "dg_model": "openai/gpt-oss-120b",
         "tools_integrated": [t.name for t in tools],
-        "system_prompt_source": "dg_system.md"
+        "isolation_engine": "subprocess"
     }
