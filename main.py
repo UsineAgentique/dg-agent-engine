@@ -1,4 +1,5 @@
 import os
+import importlib.util
 from typing import TypedDict, Annotated, List
 import operator
 from fastapi import FastAPI, Request, HTTPException
@@ -132,7 +133,7 @@ def explore_workspace_directory(directory_path: str = ".") -> str:
 
 @tool
 def read_workspace_file(file_path: str) -> str:
-    """Permet à Amal DG de lire le contenu exact d'un sous-agent (.md) ou d'un fichier de configuration."""
+    """Permet à Amal DG de lire le contenu exact d'un sous-agent (.md, .py) ou d'un fichier de configuration."""
     try:
         safe_path = os.path.normpath(file_path)
         if not os.path.exists(safe_path):
@@ -170,6 +171,32 @@ def remove_obsolete_component(file_path: str) -> str:
     except Exception as e:
         return f"ERREUR LORS DE LA SUPPRESSION : {str(e)}"
 
+@tool
+def execute_subagent(agent_name: str, mission: str) -> str:
+    """Exécute un sous-agent/pôle autonome situé dans le dossier 'agents/'.
+    Exemple : agent_name='pole_dev', mission='Écrire le script d'un scraper'
+    """
+    try:
+        os.makedirs("agents", exist_ok=True)
+        clean_name = agent_name.replace(".py", "").strip()
+        file_path = os.path.join("agents", f"{clean_name}.py")
+
+        if not os.path.exists(file_path):
+            return f"ERREUR : Le sous-agent '{clean_name}' n'existe pas dans le dossier 'agents/'. Tu dois d'abord le créer avec 'write_or_improve_agent_skill'."
+
+        spec = importlib.util.spec_from_file_location(clean_name, file_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        if hasattr(module, "run_mission"):
+            result = module.run_mission(mission)
+            return f"--- RÉSULTAT EXÉCUTÉ PAR LE SOUS-AGENT ({clean_name}) ---\n{result}"
+        else:
+            return f"ERREUR : Le fichier '{clean_name}.py' doit contenir une fonction 'run_mission(mission: str)'."
+
+    except Exception as e:
+        return f"ERREUR TECHNIQUE LORS DE L'EXÉCUTION DU SOUS-AGENT '{agent_name}' : {str(e)}"
+
 tools = [
     clean_system_database,
     inspect_infrastructure_health,
@@ -177,7 +204,8 @@ tools = [
     explore_workspace_directory,
     read_workspace_file,
     write_or_improve_agent_skill,
-    remove_obsolete_component
+    remove_obsolete_component,
+    execute_subagent
 ]
 
 
@@ -246,7 +274,7 @@ class MissionRequest(BaseModel):
 
 @app.post("/slack/events")
 async def slack_events(request: Request):
-    """Endpoint pour intercepter et traiter les événements Slack."""
+    """Endpoint pour intercepter, charger la mémoire et traiter les événements Slack."""
     data = await request.json()
     
     if data.get("type") == "url_verification":
@@ -257,9 +285,31 @@ async def slack_events(request: Request):
         user_prompt = event.get("text", "")
         channel_id = event.get("channel", "")
         
+        # --- CHARGEMENT DE LA MÉMOIRE DE CONVERSATION ---
+        conversation_history = []
+        if supabase:
+            try:
+                res = supabase.table("execution_logs") \
+                    .select("task, output") \
+                    .order("created_at", desc=True) \
+                    .limit(5) \
+                    .execute()
+                
+                if res.data:
+                    logs = res.data[::-1]
+                    for log in logs:
+                        if log.get("task"):
+                            conversation_history.append(HumanMessage(content=log["task"]))
+                        if log.get("output"):
+                            conversation_history.append(AIMessage(content=log["output"]))
+            except Exception as e:
+                print(f"Alerte : Impossible de charger la mémoire ({e})")
+        
+        conversation_history.append(HumanMessage(content=user_prompt))
+        
         try:
             initial_state = {
-                "messages": [HumanMessage(content=user_prompt)],
+                "messages": conversation_history,
                 "retry_count": 0
             }
             final_state = app_graph.invoke(initial_state)
