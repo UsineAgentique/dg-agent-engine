@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import base64
 import subprocess
 from typing import TypedDict, Annotated, List
 import operator
@@ -14,7 +15,7 @@ from langchain_groq import ChatGroq
 import httpx
 from supabase import create_client, Client
 
-app = FastAPI(title="DG-AGENT-CORE", version="2.5.0")
+app = FastAPI(title="DG-AGENT-CORE", version="2.6.0")
 
 # ==========================================
 # 0. CHARGEMENT DYNAMIQUE DU CERVEAU (dg_system.md)
@@ -108,47 +109,58 @@ def execute_system_maintenance_command(command_type: str) -> str:
 
 
 # ==========================================
-# 2. OUTILS WORKSPACE, GIT & EXÉCUTION ISOLÉE
+# 2. OUTILS WORKSPACE, GITHUB API & EXÉCUTION ISOLÉE
 # ==========================================
 
 @tool
 def git_commit_and_push(file_path: str, commit_message: str) -> str:
-    """Effectue un commit et un push direct d'un fichier vers le dépôt GitHub distant en utilisant GITHUB_TOKEN."""
+    """Publie ou met à jour un fichier directement sur le dépôt GitHub via l'API REST HTTP (sans dépendre du binaire git local)."""
     github_token = os.getenv("GITHUB_TOKEN")
+    github_repo = os.getenv("GITHUB_REPOSITORY")
+
     if not github_token:
-        return "ERREUR : GITHUB_TOKEN est absent des variables d'environnement Render."
+        return "ERREUR : GITHUB_TOKEN est absent des variables d'environnement."
+    if not github_repo:
+        return "ERREUR : GITHUB_REPOSITORY (ex: 'utilisateur/depot') est absent des variables d'environnement."
 
     try:
-        safe_path = os.path.normpath(file_path)
+        safe_path = os.path.normpath(file_path).replace("\\", "/")
         if not os.path.exists(safe_path):
-            return f"ERREUR : Le fichier '{file_path}' n'existe pas localement."
+            return f"ERREUR : Le fichier local '{file_path}' n'existe pas."
 
-        # Config temporaire Git
-        subprocess.run(["git", "config", "user.email", "bot@amal-dg.local"], check=True)
-        subprocess.run(["git", "config", "user.name", "Amal-DG Bot"], check=True)
+        with open(safe_path, "r", encoding="utf-8") as f:
+            content_str = f.read()
 
-        # Stage + Commit
-        subprocess.run(["git", "add", safe_path], check=True)
-        commit_proc = subprocess.run(["git", "commit", "-m", commit_message], capture_output=True, text=True)
+        content_b64 = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {github_token}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        api_url = f"https://api.github.com/repos/{github_repo}/contents/{safe_path}"
 
-        # Obtenir URL remote
-        remote_proc = subprocess.run(["git", "config", "--get", "remote.origin.url"], capture_output=True, text=True)
-        remote_url = remote_proc.stdout.strip()
+        with httpx.Client(timeout=15.0) as client:
+            get_resp = client.get(api_url, headers=headers)
+            sha = None
+            if get_resp.status_code == 200:
+                sha = get_resp.json().get("sha")
 
-        if "github.com" in remote_url:
-            clean_url = remote_url.split("github.com/")[-1]
-            auth_url = f"https://x-access-token:{github_token}@github.com/{clean_url}"
-            push_proc = subprocess.run(["git", "push", auth_url, "HEAD"], capture_output=True, text=True)
-        else:
-            push_proc = subprocess.run(["git", "push"], capture_output=True, text=True)
+            payload = {
+                "message": commit_message,
+                "content": content_b64,
+                "branch": "main"
+            }
+            if sha:
+                payload["sha"] = sha
 
-        if push_proc.returncode == 0:
-            return f"SUCCÈS : Le fichier '{file_path}' a été commité ('{commit_message}') et pushé avec succès sur GitHub."
-        else:
-            return f"ERREUR PUSH GIT : {push_proc.stderr}"
+            put_resp = client.put(api_url, json=payload, headers=headers)
+
+            if put_resp.status_code in [200, 201]:
+                return f"SUCCÈS : Le fichier '{file_path}' a été commité et poussé sur GitHub ({github_repo}) via l'API REST."
+            else:
+                return f"ERREUR API GITHUB ({put_resp.status_code}) : {put_resp.text}"
 
     except Exception as e:
-        return f"ERREUR EXÉCUTION GIT : {str(e)}"
+        return f"ERREUR EXÉCUTION PUSH GITHUB : {str(e)}"
 
 @tool
 def explore_workspace_directory(directory_path: str = ".") -> str:
