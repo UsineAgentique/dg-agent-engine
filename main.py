@@ -39,7 +39,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) if SUP
 
 @tool
 def clean_system_database() -> str:
-    """Nettoie complètement les tables `execution_logs` et `agent_memory` sur Supabase et consigne l'action dans `missions_log`."""
+    """Nettoie complètement les tables `agent_logs` et `agent_memory` sur Supabase et consigne l'action dans `missions_log`."""
     try:
         url = SUPABASE_URL
         key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -55,12 +55,12 @@ def clean_system_database() -> str:
         }
 
         with httpx.Client() as client:
-            resp_logs = client.delete(f"{url}/rest/v1/execution_logs?id=not.is.null", headers=headers)
+            resp_logs = client.delete(f"{url}/rest/v1/agent_logs?id=not.is.null", headers=headers)
             resp_memory = client.delete(f"{url}/rest/v1/agent_memory?id=not.is.null", headers=headers)
             
             log_payload = {
                 "task": "Clean State System Purge",
-                "output": "Purge des tables execution_logs et agent_memory effectuée avec succès.",
+                "output": "Purge des tables agent_logs et agent_memory effectuée avec succès.",
                 "status": "success"
             }
             resp_mission = client.post(f"{url}/rest/v1/missions_log", json=log_payload, headers=headers)
@@ -81,7 +81,7 @@ def inspect_infrastructure_health() -> str:
     try:
         key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
         headers = {"apikey": key, "Authorization": f"Bearer {key}"}
-        resp = httpx.get(f"{SUPABASE_URL}/rest/v1/execution_logs?select=count", headers=headers, timeout=5.0)
+        resp = httpx.get(f"{SUPABASE_URL}/rest/v1/agent_logs?select=count", headers=headers, timeout=5.0)
         if resp.status_code == 200:
             status_report.append("Supabase DB : OPÉRATIONNEL (Connecté)")
         else:
@@ -108,8 +108,47 @@ def execute_system_maintenance_command(command_type: str) -> str:
 
 
 # ==========================================
-# 2. OUTILS WORKSPACE & EXÉCUTION ISOLÉE (SUBPROCESS)
+# 2. OUTILS WORKSPACE, GIT & EXÉCUTION ISOLÉE
 # ==========================================
+
+@tool
+def git_commit_and_push(file_path: str, commit_message: str) -> str:
+    """Effectue un commit et un push direct d'un fichier vers le dépôt GitHub distant en utilisant GITHUB_TOKEN."""
+    github_token = os.getenv("GITHUB_TOKEN")
+    if not github_token:
+        return "ERREUR : GITHUB_TOKEN est absent des variables d'environnement Render."
+
+    try:
+        safe_path = os.path.normpath(file_path)
+        if not os.path.exists(safe_path):
+            return f"ERREUR : Le fichier '{file_path}' n'existe pas localement."
+
+        # Config temporaire Git
+        subprocess.run(["git", "config", "user.email", "bot@amal-dg.local"], check=True)
+        subprocess.run(["git", "config", "user.name", "Amal-DG Bot"], check=True)
+
+        # Stage + Commit
+        subprocess.run(["git", "add", safe_path], check=True)
+        commit_proc = subprocess.run(["git", "commit", "-m", commit_message], capture_output=True, text=True)
+
+        # Obtenir URL remote
+        remote_proc = subprocess.run(["git", "config", "--get", "remote.origin.url"], capture_output=True, text=True)
+        remote_url = remote_proc.stdout.strip()
+
+        if "github.com" in remote_url:
+            clean_url = remote_url.split("github.com/")[-1]
+            auth_url = f"https://x-access-token:{github_token}@github.com/{clean_url}"
+            push_proc = subprocess.run(["git", "push", auth_url, "HEAD"], capture_output=True, text=True)
+        else:
+            push_proc = subprocess.run(["git", "push"], capture_output=True, text=True)
+
+        if push_proc.returncode == 0:
+            return f"SUCCÈS : Le fichier '{file_path}' a été commité ('{commit_message}') et pushé avec succès sur GitHub."
+        else:
+            return f"ERREUR PUSH GIT : {push_proc.stderr}"
+
+    except Exception as e:
+        return f"ERREUR EXÉCUTION GIT : {str(e)}"
 
 @tool
 def explore_workspace_directory(directory_path: str = ".") -> str:
@@ -172,9 +211,7 @@ def remove_obsolete_component(file_path: str) -> str:
 
 @tool
 def execute_subagent(agent_name: str, mission: str) -> str:
-    """Exécute un sous-agent autonome situé dans 'agents/' de manière totalement isolée (Subprocess).
-    Empêche tout crash du serveur principal en cas d'erreur ou de dépassement de temps.
-    """
+    """Exécute un sous-agent autonome situé dans 'agents/' de manière totalement isolée (Subprocess)."""
     try:
         os.makedirs("agents", exist_ok=True)
         clean_name = os.path.basename(agent_name).replace(".py", "").strip()
@@ -183,7 +220,6 @@ def execute_subagent(agent_name: str, mission: str) -> str:
         if not os.path.exists(file_path):
             return f"ERREUR : Le sous-agent '{clean_name}' n'existe pas dans 'agents/'. Crée-le d'abord avec 'write_or_improve_agent_skill'."
 
-        # Code d'exécution runner isolé
         runner_code = f"""
 import sys
 import json
@@ -200,10 +236,9 @@ try:
     else:
         print(json.dumps({{"status": "error", "error": "La fonction run_mission(mission) est introuvable dans le module."}}))
 except Exception as e:
-        print(json.dumps({{"status": "error", "error": str(e)}}))
+    print(json.dumps({{"status": "error", "error": str(e)}}))
 """
 
-        # Exécution dans un sous-processus dédié avec timeout de 90 secondes
         process = subprocess.run(
             [sys.executable, "-c", runner_code],
             capture_output=True,
@@ -229,6 +264,7 @@ tools = [
     clean_system_database,
     inspect_infrastructure_health,
     execute_system_maintenance_command,
+    git_commit_and_push,
     explore_workspace_directory,
     read_workspace_file,
     write_or_improve_agent_skill,
@@ -315,7 +351,7 @@ async def slack_events(request: Request):
         conversation_history = []
         if supabase and channel_id:
             try:
-                res = supabase.table("execution_logs") \
+                res = supabase.table("agent_logs") \
                     .select("task, output") \
                     .eq("channel_id", channel_id) \
                     .order("created_at", desc=True) \
@@ -363,7 +399,7 @@ async def slack_events(request: Request):
         # Sauvegarde en BDD avec tag du canal Slack
         if supabase:
             try:
-                supabase.table("execution_logs").insert({
+                supabase.table("agent_logs").insert({
                     "channel_id": channel_id,
                     "task": user_prompt,
                     "output": final_message,
@@ -385,7 +421,7 @@ async def run_mission(request: MissionRequest):
         final_message = final_state["messages"][-1].content
         
         if supabase:
-            supabase.table("execution_logs").insert({
+            supabase.table("agent_logs").insert({
                 "task": request.prompt,
                 "output": final_message,
                 "status": "success"
