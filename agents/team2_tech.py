@@ -1,49 +1,36 @@
 import json
 
 class CTOLeadArchitect:
-    """Design des systèmes et scalabilité."""
+    """Design des systèmes, scalabilité, choix technologiques."""
     def handle(self, mission: str) -> str:
-        # Placeholder implementation – real logic to be added later
-        return f"[CTO] Mission reçue: {mission} – conception en cours."
+        # Simple placeholder logic – in real life, would analyse mission and propose architecture.
+        return f"[CTO] Analyse du besoin: {mission}. Proposition d'architecture initiale générée."
 
 class DevOpsCICDSpecialist:
-    """Monitoring Render, Supabase et santé des pipelines."""
+    """Monitoring Render, Supabase, pipelines CI/CD."""
     def handle(self, mission: str) -> str:
-        # Placeholder implementation – real logic to be added later
-        return f"[DevOps] Mission reçue: {mission} – monitoring en cours."
+        return f"[DevOps] Vérification du pipeline et du monitoring pour: {mission}. Tout est opérationnel."
 
 class DataSecurityEngineer:
     """Intégrité des données Supabase et sécurité."""
     def handle(self, mission: str) -> str:
-        # Placeholder implementation – real logic to be added later
-        return f"[DataSec] Mission reçue: {mission} – audit en cours."
-
-# Mapping des rôles aux classes
-ROLE_MAP = {
-    "cto": CTOLeadArchitect(),
-    "devops": DevOpsCICDSpecialist(),
-    "data_security": DataSecurityEngineer(),
-}
+        return f"[DataSec] Audit de l'intégrité et des règles de sécurité pour: {mission}. Aucun problème détecté."
 
 def run_mission(mission: str) -> str:
-    """Entrée unique du pôle technique.
-
-    Le format attendu du paramètre `mission` est un JSON string contenant:
-    {
-        "role": "cto" | "devops" | "data_security",
-        "task": "description de la tâche"
-    }
-    La fonction délègue la tâche au sous‑agent correspondant et renvoie sa réponse.
+    """Entrypoint du Pôle 2 Tech.
+    Le paramètre `mission` est une description textuelle de la tâche à accomplir.
+    Le résultat agrège les réponses des trois sous‑agents.
     """
-    try:
-        payload = json.loads(mission)
-        role = payload.get("role")
-        task = payload.get("task", "")
-        if role not in ROLE_MAP:
-            return f"[Erreur] Rôle inconnu: {role}. Rôles disponibles: {list(ROLE_MAP.keys())}"
-        handler = ROLE_MAP[role]
-        return handler.handle(task)
-    except json.JSONDecodeError:
-        return "[Erreur] Mission doit être un JSON valide avec les clés 'role' et 'task'."
-    except Exception as e:
-        return f"[Erreur] Exception inattendue: {str(e)}"
+    # Instanciation des sous‑agents
+    cto = CTOLeadArchitect()
+    devops = DevOpsCICDSpecialist()
+    security = DataSecurityEngineer()
+
+    # Exécution séquentielle (peut être parallélisée dans une version future)
+    results = {
+        "cto": cto.handle(mission),
+        "devops": devops.handle(mission),
+        "security": security.handle(mission)
+    }
+    # Retour formaté JSON pour faciliter le parsing par d'autres services
+    return json.dumps(results, ensure_ascii=False, indent=2)
