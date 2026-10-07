@@ -30,67 +30,62 @@ def _ux_ui_designer(mission: str) -> str:
     """Handle UX/UI Designer Agent missions.
     Supported sub‑missions:
     - "design system": returns a minimal design‑system skeleton.
-    - "interface rules": returns UI/UX best‑practice rules.
+    - "interface guidelines": returns UI/UX best‑practice rules.
     """
     mission = mission.lower()
     if "design system" in mission:
         ds = {
             "colors": {"primary": "#0066FF", "secondary": "#FF6600", "background": "#FFFFFF"},
             "typography": {"fontFamily": "Inter, sans-serif", "baseSize": "16px"},
-            "spacing": "8px"
+            "components": ["Button", "Card", "Modal", "Input"]
         }
         return json.dumps({"role": "UX/UI Designer", "design_system": ds}, indent=2)
-    if "interface" in mission or "rule" in mission:
-        rules = [
-            "Consistent navigation hierarchy",
-            "Accessible contrast ratios (WCAG AA)",
-            "Responsive layout (mobile‑first)",
-            "Feedback on every user action"
-        ]
-        return json.dumps({"role": "UX/UI Designer", "interface_rules": rules}, indent=2)
-    return "UX/UI Designer: mission not recognized. Available: design system, interface rules."
+    if "interface" in mission or "guideline" in mission:
+        guidelines = [
+            "Maintain a 8‑pixel grid.",
+            "Use accessible color contrast (>4.5:1).",
+            "Provide clear feedback on user actions.",
+            "Design for mobile‑first."]
+        return json.dumps({"role": "UX/UI Designer", "interface_guidelines": guidelines}, indent=2)
+    return "UX/UI Designer: mission not recognized. Available: design system, interface guidelines."
 
 
 def _growth_marketing(mission: str) -> str:
     """Handle Growth & Marketing Specialist missions.
     Supported sub‑missions:
     - "acquisition": returns a high‑level acquisition funnel.
-    - "metrics": returns key engagement metrics.
+    - "metrics": returns key engagement metrics to monitor.
     """
     mission = mission.lower()
     if "acquisition" in mission:
         funnel = {
-            "awareness": ["SEO", "Paid ads", "Social media"],
-            "interest": ["Content marketing", "Webinars"],
-            "conversion": ["Landing pages", "A/B testing"],
-            "retention": ["Email drip", "Push notifications"]
+            "awareness": ["SEO", "Paid Ads", "Social Media"],
+            "interest": ["Content Marketing", "Webinars"],
+            "conversion": ["Landing Pages", "A/B Testing"],
+            "retention": ["Email Nurture", "Push Notifications"]
         }
         return json.dumps({"role": "Growth & Marketing", "acquisition_funnel": funnel}, indent=2)
-    if "metric" in mission or "engagement" in mission:
-        metrics = {
-            "DAU": "Daily Active Users",
-            "MAU": "Monthly Active Users",
-            "CAC": "Customer Acquisition Cost",
-            "LTV": "Lifetime Value",
-            "CR": "Conversion Rate"
-        }
+    if "metric" in mission:
+        metrics = ["DAU/MAU ratio", "Customer Acquisition Cost (CAC)", "Lifetime Value (LTV)", "Churn rate"]
         return json.dumps({"role": "Growth & Marketing", "key_metrics": metrics}, indent=2)
     return "Growth & Marketing: mission not recognized. Available: acquisition, metrics."
 
 
 def run_mission(mission: str) -> str:
     """Entry point for the Team3 Product pole.
-    The mission string should contain a keyword indicating the target role:
-    - "cpo" or "product" → CPO/Product Manager
-    - "designer" or "ui" → UX/UI Designer
-    - "growth" or "marketing" → Growth & Marketing
-    The remainder of the string is forwarded to the role‑specific handler.
+    The *mission* string should contain a keyword that maps to one of the three sub‑agents.
+    Example missions:
+    - "roadmap for Q2"
+    - "design system skeleton"
+    - "acquisition funnel overview"
     """
+    if not mission:
+        return "Error: empty mission string."
     lowered = mission.lower()
-    if "cpo" in lowered or "product" in lowered:
+    if any(k in lowered for k in ["roadmap", "feature"]):
         return _cpo_manager(mission)
-    if "designer" in lowered or "ui" in lowered:
+    if any(k in lowered for k in ["design system", "interface", "guideline"]):
         return _ux_ui_designer(mission)
-    if "growth" in lowered or "marketing" in lowered:
+    if any(k in lowered for k in ["acquisition", "metric", "growth"]):
         return _growth_marketing(mission)
-    return "Team3 Product pole: unable to route mission. Include one of [cpo, product, designer, ui, growth, marketing] in the description."
+    return "Mission not routed: please include keywords like 'roadmap', 'design system', or 'acquisition'."
