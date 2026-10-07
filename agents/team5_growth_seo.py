@@ -1,12 +1,11 @@
 import re
-import json
 from typing import List, Dict
 
 class SEOAgent:
-    """Agent dédié à l'optimisation SEO.
-    - génération de mots‑clés pertinents
-    - audit technique simplifié
-    - recommandations on‑page
+    """Agent responsible for SEO related tasks.
+    - keyword research
+    - technical SEO audit
+    - on-page optimization
     """
 
     def __init__(self):
@@ -14,189 +13,142 @@ class SEOAgent:
         self.audit_report: Dict[str, str] = {}
         self.optimizations: List[str] = []
 
-    def generate_keywords(self, topic: str, max_keywords: int = 10) -> List[str]:
-        """Génère une liste de mots‑clés à partir d'un sujet.
-        Implémentation très basique : découpage du texte, suppression des stop‑words
-        et sélection des termes les plus fréquents.
+    def research_keywords(self, topic: str, top_n: int = 10) -> List[str]:
+        """Simple placeholder keyword generator based on the topic.
+        In a real scenario this would call an external API or use a corpus.
         """
-        stop_words = {"le", "la", "les", "de", "des", "du", "un", "une", "et", "en", "à", "pour", "dans", "sur", "avec", "par", "ou", "mais", "si", "au", "aux"}
-        words = re.findall(r"[a-zA-ZÀ-ÿ']+", topic.lower())
-        freq: Dict[str, int] = {}
-        for w in words:
-            if w not in stop_words and len(w) > 2:
-                freq[w] = freq.get(w, 0) + 1
-        # tri par fréquence puis alphabetique
-        sorted_words = sorted(freq.items(), key=lambda x: (-x[1], x[0]))
-        self.keywords = [w for w, _ in sorted_words[:max_keywords]]
+        base = re.sub(r"[^a-zA-Z0-9]", " ", topic).lower().split()
+        self.keywords = [f"{word} {suffix}" for word in base for suffix in ["tips", "guide", "2024", "best practices"]][:top_n]
         return self.keywords
 
     def technical_audit(self, url: str) -> Dict[str, str]:
-        """Audit technique très simplifié (placeholder).
-        Retourne un rapport factice contenant les points classiques à vérifier.
+        """Placeholder technical audit – returns dummy findings.
         """
-        # Dans un vrai contexte, on appellerait des APIs comme Google PageSpeed, Lighthouse, etc.
         self.audit_report = {
             "url": url,
-            "mobile_friendly": "OK",
-            "page_speed_score": "85/100",
-            "structured_data": "Présent",
-            "broken_links": "0",
-            "meta_description_length": "150 caractères",
+            "status": "OK",
+            "issues": "None detected",
+            "recommendation": "Maintain current performance"
         }
         return self.audit_report
 
-    def on_page_optimizations(self, content: str) -> List[str]:
-        """Analyse le contenu et propose des actions d'optimisation on‑page.
-        Retourne une liste d'actions (ex: ajouter H1, densité mots‑clés, etc.).
+    def optimize_on_page(self, content: str, target_keyword: str) -> str:
+        """Very naive on‑page optimization: injects the target keyword in the first paragraph.
         """
-        suggestions = []
-        # Vérification H1
-        if not re.search(r"<h1[^>]*>.*?</h1>", content, re.IGNORECASE):
-            suggestions.append("Ajouter une balise H1 descriptive.")
-        # Densité mots‑clés (exemple très basique)
-        if self.keywords:
-            total_words = len(re.findall(r"\w+", content))
-            for kw in self.keywords:
-                count = len(re.findall(rf"\b{re.escape(kw)}\b", content, re.IGNORECASE))
-                density = (count / total_words) * 100 if total_words else 0
-                if density < 0.5:
-                    suggestions.append(f"Augmenter la densité du mot‑clé '{kw}'.")
-        self.optimizations = suggestions
-        return suggestions
+        paragraphs = content.split('\n\n')
+        if not paragraphs:
+            return content
+        paragraphs[0] = f"{target_keyword}: {paragraphs[0]}"
+        optimized = "\n\n".join(paragraphs)
+        self.optimizations.append(f"Injected keyword '{target_keyword}' in first paragraph")
+        return optimized
 
 class GrowthHackerAgent:
-    """Agent dédié aux stratégies de croissance virale et aux funnels AARRR.
+    """Agent handling growth hacking tactics.
+    - viral acquisition ideas
+    - AARRR funnel mapping
+    - automation suggestions
     """
 
     def __init__(self):
-        self.funnels: List[Dict[str, str]] = []
-        self.campaigns: List[Dict[str, str]] = []
+        self.funnel_steps = ["Acquisition", "Activation", "Retention", "Referral", "Revenue"]
+        self.ideas: List[str] = []
+        self.automations: List[str] = []
 
-    def design_funnel(self, name: str, stages: List[str]) -> Dict[str, str]:
-        """Crée une description de funnel AARRR.
-        stages doit contenir les étapes dans l'ordre (Acquisition, Activation, Retention, Referral, Revenue).
-        """
-        funnel = {"name": name, "stages": " -> ".join(stages)}
-        self.funnels.append(funnel)
-        return funnel
+    def generate_viral_ideas(self, product: str, max_ideas: int = 5) -> List[str]:
+        base = product.title()
+        self.ideas = [
+            f"Launch a referral contest for {base} users",
+            f"Create shareable infographic about {base} benefits",
+            f"Offer limited‑time discount for social shares of {base}",
+            f"Integrate {base} with popular meme templates",
+            f"Host a live AMA featuring {base} power users"
+        ][:max_ideas]
+        return self.ideas
 
-    def suggest_viral_mechanic(self, product_desc: str) -> str:
-        """Propose une mécanique virale simple basée sur le texte fourni.
-        Cette implémentation est factice : elle recherche des mots‑clés comme "invite", "share", "reward".
-        """
-        if any(word in product_desc.lower() for word in ["invite", "share", "reward", "referral"]):
-            return "Implémenter un programme de parrainage avec récompense à chaque partage.")
-        return "Créer un challenge social avec un tableau de classement public."
+    def map_aarrr_funnel(self, product: str) -> Dict[str, str]:
+        mapping = {step: f"Define {step.lower()} strategy for {product}" for step in self.funnel_steps}
+        return mapping
 
-    def automate_acquisition(self, channel: str, budget: float) -> Dict[str, str]:
-        """Retourne un plan d'automatisation d'acquisition (placeholder).
-        """
-        plan = {
-            "channel": channel,
-            "budget": f"${budget:.2f}",
-            "action": "Déployer campagne CPC + retargeting automatisé",
-            "tool": "Google Ads + Facebook Ads API",
-        }
-        self.campaigns.append(plan)
-        return plan
+    def suggest_automation(self, task: str) -> str:
+        suggestion = f"Use Zapier/Make to automate '{task}' with email triggers and Slack notifications."
+        self.automations.append(suggestion)
+        return suggestion
 
 class CopywriterAgent:
-    """Agent de rédaction optimisée SEO & marketing.
+    """Agent for copy creation.
+    - SEO‑friendly articles
+    - newsletters
+    - social media posts
     """
 
     def __init__(self):
-        self.articles: List[Dict[str, str]] = []
+        self.last_output: str = ""
 
-    def write_blog_post(self, title: str, keywords: List[str], length: int = 500) -> str:
-        """Génère un texte de blog très basique en insérant les mots‑clés.
-        Le texte n'est pas destiné à être publié tel quel ; il sert de squelette.
-        """
-        intro = f"{title}\n" + "=" * len(title) + "\n\n"
-        body = f"Cet article explore les concepts clés autour de {', '.join(keywords)}. "
-        # répéter le corps pour atteindre la longueur approximative
-        while len(body) < length:
-            body += "Nous approfondissons chaque point avec des exemples concrets et des bonnes pratiques. "
-        content = intro + body.strip()
-        self.articles.append({"title": title, "content": content})
-        return content
+    def write_article(self, title: str, keywords: List[str], length: int = 500) -> str:
+        kw_str = ", ".join(keywords)
+        article = f"# {title}\n\n" \
+                  f"This article covers {kw_str}.\n\n" \
+                  f"" + "Lorem ipsum " * (length // 11)
+        self.last_output = article
+        return article
 
-    def craft_newsletter(self, subject: str, highlights: List[str]) -> str:
-        """Compose un texte de newsletter simple.
-        """
-        header = f"Subject: {subject}\n\n"
-        body = "\n- ".join(["", *highlights])
-        return header + body
+    def write_newsletter(self, subject: str, highlights: List[str]) -> str:
+        body = f"Subject: {subject}\n\nDear subscriber,\n\nHere are this week’s highlights:\n"
+        for i, h in enumerate(highlights, 1):
+            body += f"{i}. {h}\n"
+        body += "\nBest regards,\nYour Growth Team"
+        self.last_output = body
+        return body
 
-    def social_post(self, platform: str, message: str, hashtags: List[str]) -> str:
-        """Formate un post pour un réseau social donné.
-        """
+    def write_social_post(self, platform: str, message: str, hashtags: List[str]) -> str:
         tag_str = " ".join(f"#{tag}" for tag in hashtags)
-        return f"[{platform.upper()}] {message} {tag_str}".strip()
+        post = f"[{platform.upper()}] {message} {tag_str}"
+        self.last_output = post
+        return post
 
 def run_mission(mission: str) -> str:
-    """Entrypoint unique du sous‑agent.
-    Le paramètre *mission* doit être un JSON string contenant:
-    {
-        "agent": "seo|growth|copywriter",
-        "action": "...",
-        "params": { ... }
-    }
-    La fonction retourne un JSON string avec le résultat ou une erreur.
+    """Entry point for the Growth & SEO pole.
+    The mission string should be a simple command in the form:
+    `agent:action:param1,param2,...`
+    Example: `seo:research_keywords:Artificial Intelligence`
     """
     try:
-        payload = json.loads(mission)
-        agent_type = payload.get("agent")
-        action = payload.get("action")
-        params = payload.get("params", {})
-        if agent_type == "seo":
+        agent_part, action_part, *params = mission.split(":")
+        params = params[0].split(",") if params else []
+        if agent_part.lower() == "seo":
             agent = SEOAgent()
-            if action == "generate_keywords":
-                topic = params.get("topic", "")
-                max_k = int(params.get("max", 10))
-                result = agent.generate_keywords(topic, max_k)
-            elif action == "technical_audit":
-                url = params.get("url", "")
-                result = agent.technical_audit(url)
-            elif action == "on_page":
-                content = params.get("content", "")
-                result = agent.on_page_optimizations(content)
-            else:
-                raise ValueError(f"Action SEO inconnue: {action}")
-        elif agent_type == "growth":
+            if action_part == "research_keywords":
+                return ", ".join(agent.research_keywords(params[0] if params else ""))
+            if action_part == "technical_audit":
+                return str(agent.technical_audit(params[0] if params else ""))
+            if action_part == "optimize_on_page":
+                content = params[0] if len(params) > 0 else ""
+                keyword = params[1] if len(params) > 1 else ""
+                return agent.optimize_on_page(content, keyword)
+        elif agent_part.lower() == "growth":
             agent = GrowthHackerAgent()
-            if action == "design_funnel":
-                name = params.get("name", "Unnamed Funnel")
-                stages = params.get("stages", ["Acquisition", "Activation", "Retention", "Referral", "Revenue"])
-                result = agent.design_funnel(name, stages)
-            elif action == "viral_mechanic":
-                desc = params.get("description", "")
-                result = agent.suggest_viral_mechanic(desc)
-            elif action == "automate_acquisition":
-                channel = params.get("channel", "online")
-                budget = float(params.get("budget", 0))
-                result = agent.automate_acquisition(channel, budget)
-            else:
-                raise ValueError(f"Action Growth inconnue: {action}")
-        elif agent_type == "copywriter":
+            if action_part == "viral_ideas":
+                return ", ".join(agent.generate_viral_ideas(params[0] if params else ""))
+            if action_part == "map_funnel":
+                return str(agent.map_aarrr_funnel(params[0] if params else ""))
+            if action_part == "automation":
+                return agent.suggest_automation(params[0] if params else "")
+        elif agent_part.lower() == "copy":
             agent = CopywriterAgent()
-            if action == "write_blog":
-                title = params.get("title", "Untitled")
-                keywords = params.get("keywords", [])
-                length = int(params.get("length", 500))
-                result = agent.write_blog_post(title, keywords, length)
-            elif action == "newsletter":
-                subject = params.get("subject", "Newsletter")
-                highlights = params.get("highlights", [])
-                result = agent.craft_newsletter(subject, highlights)
-            elif action == "social":
-                platform = params.get("platform", "twitter")
-                message = params.get("message", "")
-                hashtags = params.get("hashtags", [])
-                result = agent.social_post(platform, message, hashtags)
-            else:
-                raise ValueError(f"Action Copywriter inconnue: {action}")
-        else:
-            raise ValueError(f"Agent inconnu: {agent_type}")
-        return json.dumps({"status": "success", "result": result})
+            if action_part == "article":
+                title = params[0] if params else "Untitled"
+                keywords = params[1].split("|") if len(params) > 1 else []
+                return agent.write_article(title, keywords)
+            if action_part == "newsletter":
+                subject = params[0] if params else "Newsletter"
+                highlights = params[1].split("|") if len(params) > 1 else []
+                return agent.write_newsletter(subject, highlights)
+            if action_part == "social":
+                platform = params[0] if params else "Twitter"
+                message = params[1] if len(params) > 1 else ""
+                hashtags = params[2].split("|") if len(params) > 2 else []
+                return agent.write_social_post(platform, message, hashtags)
+        return f"[ERROR] Unknown agent or action: {mission}"
     except Exception as e:
-        return json.dumps({"status": "error", "error": str(e)})
+        return f"[EXCEPTION] {str(e)}"
