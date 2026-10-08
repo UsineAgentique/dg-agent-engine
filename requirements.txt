@@ -1,11 +1,12 @@
 fastapi
 uvicorn
-groq
-supabase
-firecrawl-py
-e2b_code_interpreter
+httpx
 pydantic
+supabase
 langgraph
 langchain-core
 langchain-groq
+groq
+firecrawl-py
+e2b_code_interpreter
 apscheduler
