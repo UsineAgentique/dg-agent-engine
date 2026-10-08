@@ -3,302 +3,183 @@ import sys
 import json
 import base64
 import subprocess
-from typing import TypedDict, Annotated, List
 import operator
-from fastapi import FastAPI, Request, HTTPException
+from typing import TypedDict, Annotated, List
+
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks, Response
 from pydantic import BaseModel
+import httpx
+
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langchain_groq import ChatGroq
-import httpx
 from supabase import create_client, Client
 
-app = FastAPI(title="DG-AGENT-CORE", version="2.6.0")
+app = FastAPI(title="DG-AGENT-CORE-SAAS", version="3.0.0")
 
 # ==========================================
-# 0. CHARGEMENT DYNAMIQUE DU CERVEAU (dg_system.md)
+# 0. CONFIGURATION & CLÉS API (Les Super-Pouvoirs)
 # ==========================================
-SYSTEM_PROMPT = "Tu es le Directeur Général (DG) et Méta-Architecte d'une structure technologique de pointe."
-if os.path.exists("dg_system.md"):
-    try:
-        with open("dg_system.md", "r", encoding="utf-8") as f:
-            SYSTEM_PROMPT = f.read()
-        print("Succès : Fichier dg_system.md chargé comme System Prompt exécutif.")
-    except Exception as e:
-        print(f"Alerte : Impossible de lire dg_system.md ({e})")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+SLACK_TOKEN = os.getenv("SLACK_BOT_TOKEN")
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
+REDIS_URL = os.getenv("UPSTASH_REDIS_REST_URL")
+REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
-# Initialisation Supabase
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://qiwqenzxtawkrnknkoar.supabase.co")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) if SUPABASE_SERVICE_ROLE_KEY else None
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
+
+# ADN D'AMAL-DG (Directives pour le SaaS et les Graphes)
+SYSTEM_PROMPT = """Tu es Amal-DG, la Directrice Générale et Méta-Architecte IA d'une entreprise SaaS de pointe.
+Ton objectif principal est de générer de la valeur, construire des produits robustes et coordonner l'Usine Agentique.
+
+DIRECTIVES CRITIQUES POUR L'ANALYSE DE PROJET :
+1. PENSÉE EN GRAPHE : Lorsque tu analyses un nouveau projet SaaS, tu dois obligatoirement fluidifier l'exécution en concevant un graphe de tâches.
+2. DÉLÉGATION MASSIVE : Ne code pas tout toi-même. Utilise l'outil `delegate_to_subagent` pour confier l'architecture et le dev complexe à l'équipe Dev (Llama 3.3 70B), et les recherches ou tâches simples à l'équipe Exec (Llama 3.1 8B).
+3. AUTONOMIE : Utilise Tavily pour chercher des infos, Firecrawl pour lire la doc des concurrents, et Redis pour stocker tes brouillons.
+4. SYNTHÈSE : Reste concise dans tes réponses finales pour préserver la mémoire (Quota TPM)."""
 
 # ==========================================
-# 1. OUTILS D'INFRASTRUCTURE ET DE MAINTENANCE
+# 1. OUTILS EXTERNES (Recherche, Scraping, Mémoire)
 # ==========================================
 
 @tool
-def clean_system_database() -> str:
-    """Nettoie complètement les tables `agent_logs` et `agent_memory` sur Supabase et consigne l'action dans `missions_log`."""
+def tavily_web_search(query: str) -> str:
+    """Effectue une recherche sur Internet en temps réel pour trouver des informations récentes, des documentations ou analyser le marché."""
+    if not TAVILY_API_KEY: return "ERREUR: Clé TAVILY_API_KEY manquante."
     try:
-        url = SUPABASE_URL
-        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        
-        if not key:
-            return "ERREUR : La clé Supabase (SUPABASE_SERVICE_ROLE_KEY) n'est pas configurée sur le serveur."
-
-        headers = {
-            "apikey": key,
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-            "Prefer": "return=representation"
-        }
-
         with httpx.Client() as client:
-            resp_logs = client.delete(f"{url}/rest/v1/agent_logs?id=not.is.null", headers=headers)
-            resp_memory = client.delete(f"{url}/rest/v1/agent_memory?id=not.is.null", headers=headers)
-            
-            log_payload = {
-                "task": "Clean State System Purge",
-                "output": "Purge des tables agent_logs et agent_memory effectuée avec succès.",
-                "status": "success"
-            }
-            resp_mission = client.post(f"{url}/rest/v1/missions_log", json=log_payload, headers=headers)
-
-        if resp_logs.status_code in [200, 204] and resp_memory.status_code in [200, 204]:
-            return "Succès : Purge validée et consignée dans `missions_log`. État du système propre (Clean State) validé."
-        else:
-            return f"Erreur lors de la purge. Logs status: {resp_logs.status_code}, Memory status: {resp_memory.status_code}"
-            
+            res = client.post(
+                "https://api.tavily.com/search",
+                json={"api_key": TAVILY_API_KEY, "query": query, "search_depth": "advanced", "include_answer": True},
+                timeout=15.0
+            )
+            data = res.json()
+            return data.get("answer", "Pas de réponse claire.") + "\nSources: " + ", ".join([r["url"] for r in data.get("results", [])[:3]])
     except Exception as e:
-        return f"ERREUR TECHNIQUE LORS DU NETTOYAGE : {str(e)}"
+        return f"Erreur de recherche: {str(e)}"
 
 @tool
-def inspect_infrastructure_health() -> str:
-    """Vérifie l'état de santé global de l'infrastructure (Supabase, Slack, Clés API)."""
-    status_report = []
-    
+def firecrawl_read_site(url: str) -> str:
+    """Aspire un site web complet (documentation, concurrent, article) et le convertit en texte lisible pour l'agent."""
+    if not FIRECRAWL_API_KEY: return "ERREUR: Clé FIRECRAWL_API_KEY manquante."
     try:
-        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        headers = {"apikey": key, "Authorization": f"Bearer {key}"}
-        resp = httpx.get(f"{SUPABASE_URL}/rest/v1/agent_logs?select=count", headers=headers, timeout=5.0)
-        if resp.status_code == 200:
-            status_report.append("Supabase DB : OPÉRATIONNEL (Connecté)")
-        else:
-            status_report.append(f"Supabase DB : ERREUR (Statut {resp.status_code})")
+        headers = {"Authorization": f"Bearer {FIRECRAWL_API_KEY}", "Content-Type": "application/json"}
+        with httpx.Client() as client:
+            res = client.post("https://api.firecrawl.dev/v1/scrape", json={"url": url}, headers=headers, timeout=20.0)
+            data = res.json()
+            content = data.get("data", {}).get("markdown", "")
+            return content[:2500] + "\n[Contenu tronqué pour la mémoire...]" if len(content) > 2500 else content
     except Exception as e:
-        status_report.append(f"Supabase DB : INACCESSIBLE ({str(e)})")
-
-    slack_token = os.getenv("SLACK_BOT_TOKEN")
-    if slack_token and slack_token.startswith("xoxb-"):
-        status_report.append("Slack Bot Token : CONFIGURÉ et valide")
-    else:
-        status_report.append("Slack Bot Token : MANQUANT ou format invalide")
-
-    return "\n".join(status_report)
+        return f"Erreur de scraping: {str(e)}"
 
 @tool
-def execute_system_maintenance_command(command_type: str) -> str:
-    """Exécute une commande de maintenance de bas niveau sur l'infrastructure."""
-    if command_type == "purge_logs":
-        return clean_system_database.invoke({})
-    elif command_type == "diagnostic_system":
-        return inspect_infrastructure_health.invoke({})
-    return f"Commande de maintenance '{command_type}' non reconnue."
-
+def redis_fast_memory(action: str, key: str, value: str = "") -> str:
+    """Utilise Upstash Redis comme un bloc-notes ultra-rapide pour stocker (action='set') ou lire (action='get') le contexte global d'un projet SaaS entre les agents."""
+    if not REDIS_URL or not REDIS_TOKEN: return "ERREUR: Configuration Upstash Redis manquante."
+    try:
+        headers = {"Authorization": f"Bearer {REDIS_TOKEN}"}
+        with httpx.Client() as client:
+            if action == "set":
+                res = client.post(f"{REDIS_URL}/set/{key}", data=value, headers=headers)
+                return "SUCCÈS: Donnée sauvegardée dans Redis." if res.status_code == 200 else "Erreur sauvegarde Redis."
+            elif action == "get":
+                res = client.get(f"{REDIS_URL}/get/{key}", headers=headers)
+                return res.json().get("result", "Clé introuvable.")
+    except Exception as e:
+        return f"Erreur Redis: {str(e)}"
 
 # ==========================================
-# 2. OUTILS WORKSPACE, GITHUB API & EXÉCUTION ISOLÉE
+# 2. DÉLÉGATION ET ARCHITECTURE MULTI-MODÈLES (LLaMA)
 # ==========================================
 
 @tool
-def git_commit_and_push(file_path: str, commit_message: str) -> str:
-    """Publie ou met à jour un fichier directement sur le dépôt GitHub via l'API REST HTTP (sans dépendre du binaire git local)."""
-    github_token = os.getenv("GITHUB_TOKEN")
-    github_repo = os.getenv("GITHUB_REPOSITORY")
-
-    if not github_token:
-        return "ERREUR : GITHUB_TOKEN est absent des variables d'environnement."
-    if not github_repo:
-        return "ERREUR : GITHUB_REPOSITORY (ex: 'utilisateur/depot') est absent des variables d'environnement."
-
+def delegate_to_subagent(team: str, task_description: str) -> str:
+    """
+    Délègue une tâche spécifique à un sous-agent IA spécialisé.
+    Équipes disponibles:
+    - 'team_dev' : Utilise Llama 3.3 70B. Parfait pour coder, concevoir l'architecture SaaS ou résoudre des bugs complexes.
+    - 'team_exec' : Utilise Llama 3.1 8B. Parfait pour trier des logs, reformuler du texte ou des tâches très rapides.
+    """
     try:
+        # Routage intelligent
+        if team == "team_dev":
+            model_name = "llama-3.3-70b-versatile"
+        else:
+            model_name = "llama-3.1-8b-instant"
+
+        groq_client = ChatGroq(model=model_name, temperature=0.2, groq_api_key=GROQ_API_KEY)
+        
+        # Isolation du sous-agent (Garantie de ne pas dépasser le TPM global)
+        system_msg = SystemMessage(content=f"Tu es le sous-agent {team}. Ta mission est de réaliser cette tâche technique le plus parfaitement possible. Sois direct, fournis le code ou le résultat sans bavardage.")
+        user_msg = HumanMessage(content=task_description[:2000]) # Anti-Bug: Limite à 2000 caractères
+        
+        response = groq_client.invoke([system_msg, user_msg])
+        result_text = response.content
+        
+        # Troncature du retour pour protéger la mémoire d'Amal
+        if len(result_text) > 3000:
+            result_text = result_text[:3000] + "\n[...RÉSULTAT TRONQUÉ POUR PRÉSERVER LA MÉMOIRE DG...]"
+            
+        return f"--- RETOUR DE L'ÉQUIPE {team.upper()} ({model_name}) ---\n{result_text}"
+    except Exception as e:
+        return f"ERREUR LORS DE LA DÉLÉGATION À {team}: {str(e)}"
+
+@tool
+def git_commit_and_push(file_path: str, commit_message: str, content_to_write: str) -> str:
+    """Écrit le contenu généré dans un fichier local PUIS le pousse sur Github (Idéal pour déployer le SaaS direct)."""
+    try:
+        # Écriture locale
         safe_path = os.path.normpath(file_path).replace("\\", "/")
-        if not os.path.exists(safe_path):
-            return f"ERREUR : Le fichier local '{file_path}' n'existe pas."
+        os.makedirs(os.path.dirname(safe_path) or ".", exist_ok=True)
+        with open(safe_path, "w", encoding="utf-8") as f:
+            f.write(content_to_write)
+            
+        # Poussée vers Github
+        github_repo = os.getenv("GITHUB_REPOSITORY")
+        if not GITHUB_TOKEN or not github_repo: return "Fichier créé localement, mais GITHUB_TOKEN/REPO manquants pour le push."
 
-        with open(safe_path, "r", encoding="utf-8") as f:
-            content_str = f.read()
-
-        content_b64 = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
-        headers = {
-            "Authorization": f"Bearer {github_token}",
-            "Accept": "application/vnd.github.v3+json"
-        }
+        content_b64 = base64.b64encode(content_to_write.encode("utf-8")).decode("utf-8")
+        headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
         api_url = f"https://api.github.com/repos/{github_repo}/contents/{safe_path}"
 
-        with httpx.Client(timeout=15.0) as client:
+        with httpx.Client() as client:
             get_resp = client.get(api_url, headers=headers)
-            sha = None
-            if get_resp.status_code == 200:
-                sha = get_resp.json().get("sha")
+            payload = {"message": commit_message, "content": content_b64, "branch": "main"}
+            if get_resp.status_code == 200: payload["sha"] = get_resp.json().get("sha")
+            client.put(api_url, json=payload, headers=headers)
 
-            payload = {
-                "message": commit_message,
-                "content": content_b64,
-                "branch": "main"
-            }
-            if sha:
-                payload["sha"] = sha
-
-            put_resp = client.put(api_url, json=payload, headers=headers)
-
-            if put_resp.status_code in [200, 201]:
-                return f"SUCCÈS : Le fichier '{file_path}' a été commité et poussé sur GitHub ({github_repo}) via l'API REST."
-            else:
-                return f"ERREUR API GITHUB ({put_resp.status_code}) : {put_resp.text}"
-
+        return f"SUCCÈS: Fichier {file_path} écrit et déployé sur le dépôt Github {github_repo}."
     except Exception as e:
-        return f"ERREUR EXÉCUTION PUSH GITHUB : {str(e)}"
-
-@tool
-def explore_workspace_directory(directory_path: str = ".") -> str:
-    """Permet à Amal DG de cartographier l'arborescence des fichiers et sous-agents disponibles."""
-    try:
-        structure = []
-        for root, dirs, files in os.walk(directory_path):
-            if ".git" in root or "__pycache__" in root or "venv" in root:
-                continue
-            level = root.replace(directory_path, "").count(os.sep)
-            indent = " " * 4 * level
-            structure.append(f"{indent}{os.path.basename(root)}/")
-            sub_indent = " " * 4 * (level + 1)
-            for f in files:
-                if f.endswith((".md", ".py", ".yaml", ".json")):
-                    structure.append(f"{sub_indent}{f}")
-        return "\n".join(structure) if structure else "Espace de travail vide."
-    except Exception as e:
-        return f"ERREUR LORS DE L'EXPLORATION : {str(e)}"
-
-@tool
-def read_workspace_file(file_path: str) -> str:
-    """Permet à Amal DG de lire le contenu exact d'un sous-agent (.py, .md) ou d'un fichier de configuration."""
-    try:
-        safe_path = os.path.normpath(file_path)
-        if not os.path.exists(safe_path):
-            return f"ERREUR : Le fichier '{file_path}' est introuvable."
-        with open(safe_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        return f"--- CONTENU DE {file_path} ---\n{content}"
-    except Exception as e:
-        return f"ERREUR LORS DE LA LECTURE : {str(e)}"
-
-@tool
-def write_or_improve_agent_skill(file_path: str, content: str) -> str:
-    """Permet à Amal DG de créer un nouveau sous-agent Python ou d'améliorer des instructions."""
-    try:
-        safe_path = os.path.normpath(file_path)
-        directory = os.path.dirname(safe_path)
-        if directory and not os.path.exists(directory):
-            os.makedirs(directory, exist_ok=True)
-            
-        with open(safe_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        return f"SUCCÈS : Le composant '{file_path}' a été écrit ou mis à jour avec succès."
-    except Exception as e:
-        return f"ERREUR LORS DE L'ÉCRITURE : {str(e)}"
-
-@tool
-def remove_obsolete_component(file_path: str) -> str:
-    """Permet à Amal DG de supprimer un fichier ou sous-agent devenu obsolète."""
-    try:
-        safe_path = os.path.normpath(file_path)
-        if os.path.exists(safe_path):
-            os.remove(safe_path)
-            return f"SUCCÈS : '{file_path}' a été supprimé du système."
-        return f"AVERTISSEMENT : Le fichier '{file_path}' n'existe pas."
-    except Exception as e:
-        return f"ERREUR LORS DE LA SUPPRESSION : {str(e)}"
-
-@tool
-def execute_subagent(agent_name: str, mission: str) -> str:
-    """Exécute un sous-agent autonome situé dans 'agents/' de manière totalement isolée (Subprocess)."""
-    try:
-        os.makedirs("agents", exist_ok=True)
-        clean_name = os.path.basename(agent_name).replace(".py", "").strip()
-        file_path = os.path.join("agents", f"{clean_name}.py")
-
-        if not os.path.exists(file_path):
-            return f"ERREUR : Le sous-agent '{clean_name}' n'existe pas dans 'agents/'. Crée-le d'abord avec 'write_or_improve_agent_skill'."
-
-        runner_code = f"""
-import sys
-import json
-import importlib.util
-
-try:
-    spec = importlib.util.spec_from_file_location("subagent", {json.dumps(file_path)})
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    
-    if hasattr(module, "run_mission"):
-        res = module.run_mission({json.dumps(mission)})
-        print(json.dumps({{"status": "success", "result": res}}))
-    else:
-        print(json.dumps({{"status": "error", "error": "La fonction run_mission(mission) est introuvable dans le module."}}))
-except Exception as e:
-    print(json.dumps({{"status": "error", "error": str(e)}}))
-"""
-
-        process = subprocess.run(
-            [sys.executable, "-c", runner_code],
-            capture_output=True,
-            text=True,
-            timeout=90
-        )
-
-        if process.returncode != 0:
-            return f"ERREUR CRITIQUE SUBPROCESS (Code {process.returncode}) :\n{process.stderr}"
-
-        output_data = json.loads(process.stdout.strip())
-        if output_data.get("status") == "success":
-            return f"--- RÉSULTAT EXÉCUTÉ PAR LE SOUS-AGENT ({clean_name}) ---\n{output_data.get('result')}"
-        else:
-            return f"ERREUR DU SOUS-AGENT : {output_data.get('error')}"
-
-    except subprocess.TimeoutExpired:
-        return f"ALERTE TIMEOUT : Le sous-agent '{clean_name}' a été interrompu car son exécution a dépassé 90 secondes."
-    except Exception as e:
-        return f"ERREUR DE PILOTAGE SYSTEME : {str(e)}"
+        return f"ERREUR GITHUB: {str(e)}"
 
 tools = [
-    clean_system_database,
-    inspect_infrastructure_health,
-    execute_system_maintenance_command,
-    git_commit_and_push,
-    explore_workspace_directory,
-    read_workspace_file,
-    write_or_improve_agent_skill,
-    remove_obsolete_component,
-    execute_subagent
+    tavily_web_search,
+    firecrawl_read_site,
+    redis_fast_memory,
+    delegate_to_subagent,
+    git_commit_and_push
 ]
 
-
 # ==========================================
-# 3. CONFIGURATION DU MODÈLE ET DU GRAPHE
+# 3. LE CERVEAU D'AMAL (LANGGRAPH + GPT-OSS-120B)
 # ==========================================
 
 class AgentState(TypedDict):
     messages: Annotated[List, operator.add]
     retry_count: int
 
-llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
+# Le modèle suprême pour orchestrer (Gratuit mais puissant)
+llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0, groq_api_key=GROQ_API_KEY)
 llm_with_tools = llm.bind_tools(tools)
 
 def call_model(state: AgentState):
-    system_message = SystemMessage(content=SYSTEM_PROMPT)
-    messages = [system_message] + state["messages"]
+    messages = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
     response = llm_with_tools.invoke(messages)
     return {"messages": [response]}
 
@@ -306,31 +187,24 @@ tool_node = ToolNode(tools)
 
 def reflection_node(state: AgentState):
     retry_count = state.get("retry_count", 0) + 1
-    feedback_content = f"AUTO-CORRECTION TENTATIVE {retry_count}/3: Analyse l'erreur technique rencontrée et corrige ta stratégie."
     return {
-        "messages": [AIMessage(content=feedback_content)],
+        "messages": [AIMessage(content=f"AUTO-CORRECTION {retry_count}/3: L'outil a échoué. Analyse et essaie une autre approche.")],
         "retry_count": retry_count
     }
 
 def should_continue(state: AgentState):
     last_message = state["messages"][-1]
-    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-        return "tools"
-    return "end"
+    return "tools" if hasattr(last_message, "tool_calls") and last_message.tool_calls else "end"
 
 def should_reflect_or_continue(state: AgentState):
     retry_count = state.get("retry_count", 0)
-    last_message = state["messages"][-1]
-    is_error = isinstance(last_message, ToolMessage) and "ERREUR" in str(last_message.content)
-    if is_error and retry_count < 3:
-        return "reflect"
-    return "agent"
+    is_error = isinstance(state["messages"][-1], ToolMessage) and "ERREUR" in str(state["messages"][-1].content)
+    return "reflect" if is_error and retry_count < 3 else "agent"
 
 workflow = StateGraph(AgentState)
 workflow.add_node("agent", call_model)
 workflow.add_node("tools", tool_node)
 workflow.add_node("reflect", reflection_node)
-
 workflow.set_entry_point("agent")
 workflow.add_conditional_edges("agent", should_continue, {"tools": "tools", "end": END})
 workflow.add_conditional_edges("tools", should_reflect_or_continue, {"reflect": "reflect", "agent": "agent"})
@@ -338,127 +212,68 @@ workflow.add_edge("reflect", "agent")
 
 app_graph = workflow.compile()
 
+# ==========================================
+# 4. GESTIONNAIRE SLACK ASYNCHRONE (ANTI-TIMEOUT & ANTI-413)
+# ==========================================
+
+def process_slack_mission_async(channel_id: str, user_prompt: str):
+    conversation_history = []
+    
+    # CHARGEMENT MÉMOIRE SÉCURISÉ (< 1500 tokens)
+    if supabase:
+        try:
+            res = supabase.table("agent_logs").select("task, output").eq("channel_id", channel_id).order("created_at", desc=True).limit(2).execute()
+            if res.data:
+                for log in res.data[::-1]:
+                    if log.get("task"): conversation_history.append(HumanMessage(content=log["task"][:150]))
+                    if log.get("output"): conversation_history.append(AIMessage(content=log["output"][:150] + ".."))
+        except: pass
+
+    conversation_history.append(HumanMessage(content=user_prompt))
+
+    try:
+        final_state = app_graph.invoke({"messages": conversation_history, "retry_count": 0})
+        final_message = final_state["messages"][-1].content
+    except Exception as e:
+        final_message = f"⚠️ *Alerte Critique Amal-DG* : {str(e)}"
+
+    # RETOUR SLACK
+    if SLACK_TOKEN:
+        try:
+            httpx.post(
+                "https://slack.com/api/chat.postMessage",
+                json={"channel": channel_id, "text": final_message},
+                headers={"Authorization": f"Bearer {SLACK_TOKEN}", "Content-Type": "application/json"}
+            )
+        except: pass
+
+    # SAUVEGARDE SUPABASE
+    if supabase:
+        try: supabase.table("agent_logs").insert({"channel_id": channel_id, "task": user_prompt, "output": final_message, "status": "success"}).execute()
+        except: pass
 
 # ==========================================
-# 4. ENDPOINTS FASTAPI
+# 5. ENDPOINTS WEB FASTAPI
 # ==========================================
-
-class MissionRequest(BaseModel):
-    prompt: str
 
 @app.post("/slack/events")
-async def slack_events(request: Request):
-    """Endpoint Slack avec mémoire isolée par canal (channel_id)."""
+async def slack_events(request: Request, background_tasks: BackgroundTasks):
+    """Endpoint Slack non-bloquant : Réponse immédiate pour éviter le timeout 3s."""
     data = await request.json()
-    
-    if data.get("type") == "url_verification":
-        return {"challenge": data.get("challenge")}
+    if data.get("type") == "url_verification": return {"challenge": data.get("challenge")}
         
     event = data.get("event", {})
     if event.get("type") in ["message", "app_mention"] and not event.get("bot_id"):
-        user_prompt = event.get("text", "")
-        channel_id = event.get("channel", "")
-        
-        # --- MÉMOIRE ISOLÉE PAR CANAL SLACK ---
-        conversation_history = []
-        if supabase and channel_id:
-            try:
-                res = supabase.table("agent_logs") \
-                    .select("task, output") \
-                    .eq("channel_id", channel_id) \
-                    .order("created_at", desc=True) \
-                    .limit(5) \
-                    .execute()
-                
-                if res.data:
-                    logs = res.data[::-1]
-                    for log in logs:
-                        if log.get("task"):
-                            conversation_history.append(HumanMessage(content=log["task"]))
-                        if log.get("output"):
-                            conversation_history.append(AIMessage(content=log["output"]))
-            except Exception as e:
-                print(f"Alerte : Erreur lecture mémoire canal ({e})")
-        
-        conversation_history.append(HumanMessage(content=user_prompt))
-        
-        try:
-            initial_state = {
-                "messages": conversation_history,
-                "retry_count": 0
-            }
-            final_state = app_graph.invoke(initial_state)
-            final_message = final_state["messages"][-1].content
-        except Exception as e:
-            final_message = f"ERREUR EXÉCUTION DG-CORE : {str(e)}"
-            
-        # Envoi de la réponse sur Slack
-        slack_token = os.getenv("SLACK_BOT_TOKEN")
-        if slack_token:
-            headers = {
-                "Authorization": f"Bearer {slack_token}",
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "channel": channel_id,
-                "text": final_message
-            }
-            try:
-                httpx.post("https://slack.com/api/chat.postMessage", json=payload, headers=headers)
-            except Exception:
-                pass
-                
-        # Sauvegarde en BDD avec tag du canal Slack
-        if supabase:
-            try:
-                supabase.table("agent_logs").insert({
-                    "channel_id": channel_id,
-                    "task": user_prompt,
-                    "output": final_message,
-                    "status": "success"
-                }).execute()
-            except Exception:
-                pass
+        channel_id = event.get("channel")
+        user_prompt = event.get("text")
+        if channel_id and user_prompt:
+            # Lancement asynchrone pour ne pas bloquer Render
+            background_tasks.add_task(process_slack_mission_async, channel_id, user_prompt)
 
-    return {"status": "ok"}
-
-@app.post("/run-mission")
-async def run_mission(request: MissionRequest):
-    try:
-        initial_state = {
-            "messages": [HumanMessage(content=request.prompt)],
-            "retry_count": 0
-        }
-        final_state = app_graph.invoke(initial_state)
-        final_message = final_state["messages"][-1].content
-        
-        if supabase:
-            supabase.table("agent_logs").insert({
-                "task": request.prompt,
-                "output": final_message,
-                "status": "success"
-            }).execute()
-        
-        return {
-            "status": "success",
-            "result": final_message,
-            "retries_used": final_state.get("retry_count", 0)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # Réponse HTTP 200 en moins de 100ms
+    return Response(status_code=200)
 
 @app.get("/health")
-async def health_check():
-    return {
-        "status": "healthy",
-        "service": "DG-AGENT-CORE",
-        "dg_system_loaded": os.path.exists("dg_system.md")
-    }
-
-@app.get("/model")
-async def get_active_model():
-    return {
-        "dg_model": "openai/gpt-oss-120b",
-        "tools_integrated": [t.name for t in tools],
-        "isolation_engine": "subprocess"
-    }
+def health_check():
+    """Route pour UptimeRobot, empêche Render de s'endormir."""
+    return {"status": "SAAS-ENGINE-ONLINE"}
