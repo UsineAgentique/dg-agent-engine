@@ -20,7 +20,7 @@ from supabase import create_client, Client
 app = FastAPI(title="DG-AGENT-CORE-SAAS", version="3.0.0")
 
 # ==========================================
-# 0. CONFIGURATION & CLÉS API (Les Super-Pouvoirs)
+# 0. CONFIGURATION & CLÉS API
 # ==========================================
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -34,95 +34,87 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
-# ADN D'AMAL-DG (Directives pour le SaaS et les Graphes)
-SYSTEM_PROMPT = """Tu es Amal-DG, la Directrice Générale et Méta-Architecte IA d'une entreprise SaaS de pointe.
-Ton objectif principal est de générer de la valeur, construire des produits robustes et coordonner l'Usine Agentique.
-
-DIRECTIVES CRITIQUES POUR L'ANALYSE DE PROJET :
-1. PENSÉE EN GRAPHE : Lorsque tu analyses un nouveau projet SaaS, tu dois obligatoirement fluidifier l'exécution en concevant un graphe de tâches.
-2. DÉLÉGATION MASSIVE : Ne code pas tout toi-même. Utilise l'outil `delegate_to_subagent` pour confier l'architecture et le dev complexe à l'équipe Dev (Llama 3.3 70B), et les recherches ou tâches simples à l'équipe Exec (Llama 3.1 8B).
-3. AUTONOMIE : Utilise Tavily pour chercher des infos, Firecrawl pour lire la doc des concurrents, et Redis pour stocker tes brouillons.
-4. SYNTHÈSE : Reste concise dans tes réponses finales pour préserver la mémoire (Quota TPM)."""
+# PROMPT SYSTÈME ULTRA-COMPACT (Économie massive de tokens)
+SYSTEM_PROMPT = """Tu es Amal-DG, Directrice Générale et Architecte IA du SaaS Immobilier Québec.
+Directives:
+1. PENSÉE EN GRAPHE: Décompose les projets SaaS en étapes exécutables.
+2. DÉLÉGATION SYSTÉMATIQUE: Confie le dev et l'analyse complexe à `team_dev` (Llama 70B) et le tri/rapide à `team_exec` (Llama 8B).
+3. AUTONOMIE: Utilise les outils de recherche/scraping et sauvegarde systématiquement les rapports complets sur GitHub.
+4. SYNTHÈSE: Reste très concise sur Slack (max 3-4 puces) pour préserver le quota TPM."""
 
 # ==========================================
-# 1. OUTILS EXTERNES (Recherche, Scraping, Mémoire)
+# 1. OUTILS EXTERNES (DOCSTRINGS LEGS POUR RÉDUIRE LE SCHÉMA JSON)
 # ==========================================
 
 @tool
 def tavily_web_search(query: str) -> str:
-    """Effectue une recherche sur Internet en temps réel pour trouver des informations récentes, des documentations ou analyser le marché."""
+    """Recherche Web en temps réel (marché, TAL, lois, actu)."""
     if not TAVILY_API_KEY: return "ERREUR: Clé TAVILY_API_KEY manquante."
     try:
         with httpx.Client() as client:
             res = client.post(
                 "https://api.tavily.com/search",
-                json={"api_key": TAVILY_API_KEY, "query": query, "search_depth": "advanced", "include_answer": True},
-                timeout=15.0
+                json={"api_key": TAVILY_API_KEY, "query": query, "search_depth": "basic", "include_answer": True},
+                timeout=12.0
             )
             data = res.json()
-            return data.get("answer", "Pas de réponse claire.") + "\nSources: " + ", ".join([r["url"] for r in data.get("results", [])[:3]])
+            answer = data.get("answer", "Pas de réponse claire.")
+            return answer[:1000]
     except Exception as e:
         return f"Erreur de recherche: {str(e)}"
 
 @tool
 def firecrawl_read_site(url: str) -> str:
-    """Aspire un site web complet (documentation, concurrent, article) et le convertit en texte lisible pour l'agent."""
+    """Lit et convertit une URL/page Web en texte lisible."""
     if not FIRECRAWL_API_KEY: return "ERREUR: Clé FIRECRAWL_API_KEY manquante."
     try:
         headers = {"Authorization": f"Bearer {FIRECRAWL_API_KEY}", "Content-Type": "application/json"}
         with httpx.Client() as client:
-            res = client.post("https://api.firecrawl.dev/v1/scrape", json={"url": url}, headers=headers, timeout=20.0)
+            res = client.post("https://api.firecrawl.dev/v1/scrape", json={"url": url}, headers=headers, timeout=15.0)
             data = res.json()
             content = data.get("data", {}).get("markdown", "")
-            return content[:2500] + "\n[Contenu tronqué pour la mémoire...]" if len(content) > 2500 else content
+            return content[:1200] + "\n[Tronqué pour préserver la mémoire...]" if len(content) > 1200 else content
     except Exception as e:
         return f"Erreur de scraping: {str(e)}"
 
 @tool
 def redis_fast_memory(action: str, key: str, value: str = "") -> str:
-    """Utilise Upstash Redis comme un bloc-notes ultra-rapide pour stocker (action='set') ou lire (action='get') le contexte global d'un projet SaaS entre les agents."""
+    """Lit ('get') ou écrit ('set') une information dans la mémoire rapide Redis."""
     if not REDIS_URL or not REDIS_TOKEN: return "ERREUR: Configuration Upstash Redis manquante."
     try:
         headers = {"Authorization": f"Bearer {REDIS_TOKEN}"}
         with httpx.Client() as client:
             if action == "set":
                 res = client.post(f"{REDIS_URL}/set/{key}", data=value, headers=headers)
-                return "SUCCÈS: Donnée sauvegardée dans Redis." if res.status_code == 200 else "Erreur sauvegarde Redis."
+                return "SUCCÈS: Sauvegardé dans Redis." if res.status_code == 200 else "Erreur sauvegarde Redis."
             elif action == "get":
                 res = client.get(f"{REDIS_URL}/get/{key}", headers=headers)
-                return res.json().get("result", "Clé introuvable.")
+                return str(res.json().get("result", "Clé introuvable."))
     except Exception as e:
         return f"Erreur Redis: {str(e)}"
 
-# ==========================================
-# 2. DÉLÉGATION ET ARCHITECTURE MULTI-MODÈLES (LLaMA)
-# ==========================================
-
 @tool
-def delegate_to_subagent(team: str, task_description: str) -> str:
+def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "") -> str:
     """
-    Délègue une tâche spécifique à un sous-agent IA spécialisé.
-    Équipes disponibles:
-    - 'team_dev' : Utilise Llama 3.3 70B. Parfait pour coder, concevoir l'architecture SaaS ou résoudre des bugs complexes.
-    - 'team_exec' : Utilise Llama 3.1 8B. Parfait pour trier des logs, reformuler du texte ou des tâches très rapides.
+    Délègue une mission technique à 'team_dev' (Llama 70B) ou 'team_exec' (Llama 8B).
+    Si `save_to_file` est fourni (ex: 'docs/market.md'), le rapport complet y sera sauvegardé via GitHub.
     """
     try:
-        # Routage intelligent
-        if team == "team_dev":
-            model_name = "llama-3.3-70b-versatile"
-        else:
-            model_name = "llama-3.1-8b-instant"
-
+        model_name = "llama-3.3-70b-versatile" if team == "team_dev" else "llama-3.1-8b-instant"
         groq_client = ChatGroq(model=model_name, temperature=0.2, groq_api_key=GROQ_API_KEY)
         
-        # Isolation du sous-agent (Garantie de ne pas dépasser le TPM global)
-        system_msg = SystemMessage(content=f"Tu es le sous-agent {team}. Ta mission est de réaliser cette tâche technique le plus parfaitement possible. Sois direct, fournis le code ou le résultat sans bavardage.")
-        user_msg = HumanMessage(content=task_description[:2000]) # Anti-Bug: Limite à 2000 caractères
+        system_msg = SystemMessage(content=f"Tu es le sous-agent {team}. Exécute cette mission technique de façon exhaustive et ultra-détaillée. Fournis le code ou le rapport complet.")
+        user_msg = HumanMessage(content=task_description)
         
         response = groq_client.invoke([system_msg, user_msg])
         result_text = response.content
         
-        # Troncature du retour pour protéger la mémoire d'Amal
+        # Sauvegarde automatique sur GitHub si un chemin de fichier est fourni
+        if save_to_file:
+            git_commit_and_push(save_to_file, f"Livrable {team}", result_text)
+            return f"SUCCÈS: Mission {team} terminée à 100%. Le rapport/code complet a été publié dans '{save_to_file}' sur GitHub.\n\nAperçu du contenu:\n{result_text[:800]}"
+            
+        # Troncature du retour direct sur Slack pour protéger la mémoire d'Amal
         if len(result_text) > 3000:
             result_text = result_text[:3000] + "\n[...RÉSULTAT TRONQUÉ POUR PRÉSERVER LA MÉMOIRE DG...]"
             
@@ -132,15 +124,13 @@ def delegate_to_subagent(team: str, task_description: str) -> str:
 
 @tool
 def git_commit_and_push(file_path: str, commit_message: str, content_to_write: str) -> str:
-    """Écrit le contenu généré dans un fichier local PUIS le pousse sur Github (Idéal pour déployer le SaaS direct)."""
+    """Écrit le contenu généré dans un fichier local PUIS le pousse sur Github."""
     try:
-        # Écriture locale
         safe_path = os.path.normpath(file_path).replace("\\", "/")
         os.makedirs(os.path.dirname(safe_path) or ".", exist_ok=True)
         with open(safe_path, "w", encoding="utf-8") as f:
             f.write(content_to_write)
             
-        # Poussée vers Github
         github_repo = os.getenv("GITHUB_REPOSITORY")
         if not GITHUB_TOKEN or not github_repo: return "Fichier créé localement, mais GITHUB_TOKEN/REPO manquants pour le push."
 
@@ -158,7 +148,7 @@ def git_commit_and_push(file_path: str, commit_message: str, content_to_write: s
     except Exception as e:
         return f"ERREUR GITHUB: {str(e)}"
 
-tools = [
+all_tools = [
     tavily_web_search,
     firecrawl_read_site,
     redis_fast_memory,
@@ -167,28 +157,67 @@ tools = [
 ]
 
 # ==========================================
-# 3. LE CERVEAU D'AMAL (LANGGRAPH + GPT-OSS-120B)
+# 2. ROUTEUR DYNAMIQUE ET CERVEAU D'AMAL (GPT-OSS-120B)
 # ==========================================
 
 class AgentState(TypedDict):
     messages: Annotated[List, operator.add]
     retry_count: int
 
-# Le modèle suprême pour orchestrer (Gratuit mais puissant)
+# Modèle principal conservé
 llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0, groq_api_key=GROQ_API_KEY)
-llm_with_tools = llm.bind_tools(tools)
+
+def select_tools_for_query(text: str):
+    """Filtre dynamiquement les outils présentés à Amal-DG pour réduire la charge initiale à ~1500 tokens."""
+    text_lower = text.lower()
+    selected = []
+    
+    # Mots-clés Recherche & Scraping
+    if any(k in text_lower for k in ["cherche", "recherche", "web", "site", "scrape", "url", "http", "marché", "tal", "quebec"]):
+        selected.extend([tavily_web_search, firecrawl_read_site])
+        
+    # Mots-clés Dev, Sous-agents & GitHub
+    if any(k in text_lower for k in ["code", "dev", "agent", "équipe", "team", "git", "push", "github", "fichier"]):
+        selected.extend([delegate_to_subagent, git_commit_and_push])
+        
+    # Mots-clés Mémoire
+    if any(k in text_lower for k in ["redis", "mémoire", "sauvegarde", "lit"]):
+        selected.append(redis_fast_memory)
+        
+    # Repli par défaut : Délégation + Recherche uniquement (empreinte minimale)
+    if not selected:
+        selected = [delegate_to_subagent, tavily_web_search]
+        
+    return list({t.name: t for t in selected}.values())
 
 def call_model(state: AgentState):
-    messages = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
-    response = llm_with_tools.invoke(messages)
+    # Fenêtrage mémoire strict: Seuls les 2 derniers messages sont envoyés à Groq
+    recent_messages = state["messages"][-2:] if len(state["messages"]) > 2 else state["messages"]
+    
+    # Extraction du dernier message utilisateur
+    last_user_text = ""
+    for m in reversed(recent_messages):
+        if isinstance(m, HumanMessage):
+            last_user_text = str(m.content)
+            break
+            
+    # Sélection des outils nécessaires
+    active_tools = select_tools_for_query(last_user_text)
+    
+    # Binding dynamique des outils filtrés
+    llm_dynamic = llm.bind_tools(active_tools) if active_tools else llm
+    
+    messages = [SystemMessage(content=SYSTEM_PROMPT)] + recent_messages
+    response = llm_dynamic.invoke(messages)
     return {"messages": [response]}
 
-tool_node = ToolNode(tools)
+# ToolNode conserve l'intégralité des outils pour l'exécution locale du graphe
+tool_node = ToolNode(all_tools)
 
 def reflection_node(state: AgentState):
     retry_count = state.get("retry_count", 0) + 1
     return {
-        "messages": [AIMessage(content=f"AUTO-CORRECTION {retry_count}/3: L'outil a échoué. Analyse et essaie une autre approche.")],
+        "messages": [AIMessage(content=f"AUTO-CORRECTION {retry_count}/3: Relecture et ajustement de l'approche.")],
         "retry_count": retry_count
     }
 
@@ -213,20 +242,20 @@ workflow.add_edge("reflect", "agent")
 app_graph = workflow.compile()
 
 # ==========================================
-# 4. GESTIONNAIRE SLACK ASYNCHRONE (ANTI-TIMEOUT & ANTI-413)
+# 3. GESTIONNAIRE SLACK ASYNCHRONE
 # ==========================================
 
 def process_slack_mission_async(channel_id: str, user_prompt: str):
     conversation_history = []
     
-    # CHARGEMENT MÉMOIRE SÉCURISÉ (< 1500 tokens)
+    # Chargement mémoire Supabase ultra-léger (1 seul échange précédent)
     if supabase:
         try:
-            res = supabase.table("agent_logs").select("task, output").eq("channel_id", channel_id).order("created_at", desc=True).limit(2).execute()
+            res = supabase.table("agent_logs").select("task, output").eq("channel_id", channel_id).order("created_at", desc=True).limit(1).execute()
             if res.data:
-                for log in res.data[::-1]:
-                    if log.get("task"): conversation_history.append(HumanMessage(content=log["task"][:150]))
-                    if log.get("output"): conversation_history.append(AIMessage(content=log["output"][:150] + ".."))
+                log = res.data[0]
+                if log.get("task"): conversation_history.append(HumanMessage(content=log["task"][:100]))
+                if log.get("output"): conversation_history.append(AIMessage(content=log["output"][:100]))
         except: pass
 
     conversation_history.append(HumanMessage(content=user_prompt))
@@ -253,12 +282,11 @@ def process_slack_mission_async(channel_id: str, user_prompt: str):
         except: pass
 
 # ==========================================
-# 5. ENDPOINTS WEB FASTAPI
+# 4. ENDPOINTS WEB FASTAPI
 # ==========================================
 
 @app.post("/slack/events")
 async def slack_events(request: Request, background_tasks: BackgroundTasks):
-    """Endpoint Slack non-bloquant : Réponse immédiate pour éviter le timeout 3s."""
     data = await request.json()
     if data.get("type") == "url_verification": return {"challenge": data.get("challenge")}
         
@@ -267,13 +295,10 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
         channel_id = event.get("channel")
         user_prompt = event.get("text")
         if channel_id and user_prompt:
-            # Lancement asynchrone pour ne pas bloquer Render
             background_tasks.add_task(process_slack_mission_async, channel_id, user_prompt)
 
-    # Réponse HTTP 200 en moins de 100ms
     return Response(status_code=200)
 
 @app.get("/health")
 def health_check():
-    """Route pour UptimeRobot, empêche Render de s'endormir."""
     return {"status": "SAAS-ENGINE-ONLINE"}
