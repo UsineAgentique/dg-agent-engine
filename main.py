@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import time
 import base64
 import operator
 from typing import TypedDict, Annotated, List, Union
@@ -15,7 +16,7 @@ from langchain_openai import ChatOpenAI
 from supabase import create_client, Client
 from fpdf import FPDF
 
-app = FastAPI(title="DG-AGENT-CORE-SAAS", version="4.1.0")
+app = FastAPI(title="DG-AGENT-CORE-SAAS", version="4.2.0")
 
 # ==========================================
 # 0. CONFIGURATION & CLÉS API (14 SERVICES)
@@ -234,27 +235,39 @@ def prepare_optimized_context(messages: list) -> list:
 def call_model(state: AgentState):
     system_ctx = SystemMessage(content=SYSTEM_PROMPT)
     optimized_history = prepare_optimized_context(state["messages"])
-    
     full_messages = [system_ctx] + optimized_history
-    response = llm.invoke(full_messages)
-    content = response.content.strip()
     
-    if content.startswith("{") and "action" in content:
+    max_retries = 3
+    retry_delay = 12  # Pause de sécurité en cas de Rate Limit 429 de Groq
+    
+    for attempt in range(max_retries):
         try:
-            tool_data = json.loads(content)
-            action_name = tool_data.get("action")
-            action_input = tool_data.get("action_input", {})
+            response = llm.invoke(full_messages)
+            content = response.content.strip()
             
-            if action_name in TOOLS_MAP:
-                tool_fn = TOOLS_MAP[action_name]
-                tool_result = tool_fn(**action_input) if isinstance(action_input, dict) else tool_fn(action_input)
-                
-                tool_msg = HumanMessage(content=f"--- RÉSULTAT ACTION ({action_name}) ---\n{tool_result}\n\nPoursuis la suite des opérations de façon autonome.")
-                return {"messages": [AIMessage(content=content), tool_msg]}
-        except Exception:
-            pass
+            if content.startswith("{") and "action" in content:
+                try:
+                    tool_data = json.loads(content)
+                    action_name = tool_data.get("action")
+                    action_input = tool_data.get("action_input", {})
+                    
+                    if action_name in TOOLS_MAP:
+                        tool_fn = TOOLS_MAP[action_name]
+                        tool_result = tool_fn(**action_input) if isinstance(action_input, dict) else tool_fn(action_input)
+                        
+                        tool_msg = HumanMessage(content=f"--- RÉSULTAT ACTION ({action_name}) ---\n{tool_result}\n\nPoursuis la suite des opérations de façon autonome.")
+                        return {"messages": [AIMessage(content=content), tool_msg]}
+                except Exception:
+                    pass
 
-    return {"messages": [response]}
+            return {"messages": [response]}
+            
+        except Exception as e:
+            error_str = str(e)
+            if ("rate_limit_exceeded" in error_str or "429" in error_str) and attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
+            return {"messages": [AIMessage(content=f"⚠️ Erreur Moteur : {error_str}")]}
 
 def should_continue(state: AgentState):
     """Maintient la boucle tant qu'une action est exécutée par l'agent."""
@@ -307,4 +320,4 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
 
 @app.get("/health")
 def health_check():
-    return {"status": "SAAS-ENGINE-ONLINE-V4.1-FULL"}
+    return {"status": "SAAS-ENGINE-ONLINE-V4.2-FULL"}
