@@ -21,6 +21,7 @@ app = FastAPI(title="DG-AGENT-CORE-SAAS", version="3.0.0")
 # 0. CONFIGURATION & CLÉS API
 # ==========================================
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 SLACK_TOKEN = os.getenv("SLACK_BOT_TOKEN")
@@ -109,11 +110,21 @@ def git_commit_and_push(file_path: str, commit_message: str, content_to_write: s
 
 def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "") -> str:
     try:
-        # Modèle Qwen 32B dédié pour l'ensemble des sous-agents (100% Gratuit sur Groq)
-        model_name = "qwen/qwen3-32b"
+        # OPTION GROQ : Modèle rapide et gratuit (Developer Plan 250K TPM) sur Groq
+        model_name = "openai/gpt-oss-20b"
         groq_client = ChatGroq(model=model_name, temperature=0.2, groq_api_key=GROQ_API_KEY)
+
+        # OPTION OPENROUTER (Si besoin de basculer vers OpenRouter Free) :
+        # from langchain_openai import ChatOpenAI
+        # model_name = "google/gemma-4-31b:free"
+        # groq_client = ChatOpenAI(
+        #     model=model_name,
+        #     temperature=0.2,
+        #     openai_api_key=OPENROUTER_API_KEY,
+        #     openai_api_base="https://openrouter.ai/api/v1"
+        # )
         
-        system_msg = SystemMessage(content=f"Tu es l'équipe spécialisée {team}. Exécute la mission de manière exhaustive. Rédige un rapport ou du code complet.")
+        system_msg = SystemMessage(content=f"Tu es l'équipe spécialisée {team}. Exécute la mission de manière exhaustive. Rédige un rapport complet au format Markdown.")
         user_msg = HumanMessage(content=task_description)
         
         response = groq_client.invoke([system_msg, user_msg])
