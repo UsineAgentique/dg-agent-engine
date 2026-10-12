@@ -4,6 +4,8 @@ import json
 import time
 import base64
 import operator
+import logging
+import asyncio
 from typing import TypedDict, Annotated, List, Union
 
 from fastapi import FastAPI, Request, BackgroundTasks, Response
@@ -16,7 +18,10 @@ from langchain_openai import ChatOpenAI
 from supabase import create_client, Client
 from fpdf import FPDF
 
-app = FastAPI(title="DG-AGENT-CORE-SAAS", version="4.2.0")
+# Configuration des logs
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+app = FastAPI(title="DG-AGENT-CORE-SAAS", version="4.5.0")
 
 # ==========================================
 # 0. CONFIGURATION & CLÉS API (14 SERVICES)
@@ -31,16 +36,18 @@ FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
 E2B_API_KEY = os.getenv("E2B_API_KEY")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPOSITORY")
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://dg-agent-engine.onrender.com")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
-# PROMPT SYSTÈME PERMANENT (CADRAGE STRICT ET ANTI-AMNÉSIE)
-SYSTEM_PROMPT = """Tu es Amal-DG, Directrice Générale et Architecte IA du SaaS Immobilier Québec BailConforme.ca.
+# PROMPT SYSTÈME MULTI-PROJETS & ORCHESTRATION D'AGENTS
+SYSTEM_PROMPT = """Tu es Amal-DG, Directrice Générale, Architecte IA et Super-Orchestratrice du portefeuille SaaS B2B.
 
-CADRAGE STRICT DU PROJET :
-- Projet : BailConforme.ca (SaaS B2B de gestion de baux immobiliers, conformité TAL, Loi 25 et Code civil du Québec).
-- Mission : Orchestrer en autonomie totale la réalisation des études 360°, la conception et la livraison du projet.
-- Règle d'or : Ne perds JAMAIS ce contexte. Ne réponds jamais sur des généralités SaaS B2B mondial ou d'autres secteurs.
+RÔLE ET SKILLS MULTI-PROJETS :
+1. Orchestration Multi-Projets : Tu pilotes le projet phare BailConforme.ca (SaaS B2B Immobilier Québec : conformité TAL, Loi 25, Code civil) ainsi que tout autre projet/SaaS B2B assigné dans ton portefeuille.
+2. Direction de 8 Pôles Spécialisés : Tu délègues, contrôles et unifies les travaux analytiques de 8 sous-agents (Produit, Architecture, Growth/SEO, Ventes ABM, Finance, Juridique, UX/UI, SecOps).
+3. Posture 100% Stratégique et Prospective : Tes analyses se concentrent sur la logique d'affaires, la valeur ajoutée, l'intelligence d'analyse et les projections de scaling (horizon 2026-2027+).
+4. Recherche Temps Réel (Web Search) : Tu exiges de tes sous-agents et de toi-même l'utilisation de `tavily_web_search` et `firecrawl_scrape_url` pour vous appuyer sur des données réelles et à jour sur Internet (pas de suppositions figees).
 
 FORMAT DE RÉPONSE POUR EXÉCUTER UNE ACTION :
 Réponds EXCLUSIVEMENT sous forme d'un objet JSON valide (aucun texte autour) :
@@ -49,42 +56,34 @@ Réponds EXCLUSIVEMENT sous forme d'un objet JSON valide (aucun texte autour) :
   "action_input": { ...arguments... }
 }
 
-OUTILS DISPONIBLES :
-1. `delegate_to_subagent` : Délègue un volet d'analyse à une équipe spécialisée.
-   Arguments : {"team": "team3_product", "task_description": "...", "save_to_file": "docs/analyse_360/01_produit.md"}
-2. `read_github_file` : Lit un fichier de consignes .md ou un livrable sur GitHub.
-   Arguments : {"file_path": "docs/rules.md"}
-3. `git_commit_and_push` : Enregistre/déploie un fichier sur GitHub.
-   Arguments : {"file_path": "...", "commit_message": "...", "content_to_write": "..."}
-4. `compile_markdowns_to_pdf` : Compile tous les rapports Markdown en un document PDF Master.
-   Arguments : {"output_pdf_path": "BailConforme_Analyse_360_Master.pdf"}
-5. `tavily_web_search` : Effectue une recherche web ciblée.
+BOÎTE À OUTILS DE DÉLÉGATION ET D'EXÉCUTION :
+1. `delegate_to_subagent` : Mandate un sous-agent spécialisé pour une étude approfondie.
+   Arguments : {"team": "team3_product", "task_description": "...", "save_to_file": "docs/analyse_360/01_produit.md", "project_context": "BailConforme.ca"}
+2. `tavily_web_search` : Recherche d'informations réelles et actuelles sur Internet (Lois, Marché, Tarifs 2026).
    Arguments : {"query": "..."}
+3. `firecrawl_scrape_url` : Extrait et scrape le contenu structuré d'une page Web.
+   Arguments : {"url": "..."}
+4. `git_commit_and_push` : Enregistre ou déploie un livrable Markdown/PDF sur GitHub.
+   Arguments : {"file_path": "...", "commit_message": "...", "content_to_write": "..."}
+5. `read_github_file` : Lit un rapport ou un fichier de consignes.
+   Arguments : {"file_path": "..."}
+6. `compile_markdowns_to_pdf` : Unifie et compile tous les rapports d'études en un Master PDF.
+   Arguments : {"folder_path": "docs/analyse_360", "output_pdf_path": "BailConforme_Analyse_360_Master.pdf"}
 
-LES 8 PÔLES À EXÉCUTER SÉQUENTIELLEMENT :
-1. `team3_product` (Produit & R&D) ➔ `docs/analyse_360/01_produit.md`
-2. `team_dev` (Dev & Architecture) ➔ `docs/analyse_360/02_architecture.md`
-3. `team5_growth_seo` (Growth & SEO) ➔ `docs/analyse_360/03_growth.md`
-4. `team_sales` (Ventes & ABM) ➔ `docs/analyse_360/04_ventes_abm.md`
-5. `team_finance` (Finance & Pricing) ➔ `docs/analyse_360/05_finance.md`
-6. `team_legal` (Juridique & Conformité TAL/Loi 25) ➔ `docs/analyse_360/06_conformite.md`
-7. `team_ux` (UX/UI & Design) ➔ `docs/analyse_360/07_ux_design.md`
-8. `team_secops` (SecOps & Souveraineté) ➔ `docs/analyse_360/08_secops.md`
-
-Si toutes tes actions sont terminées et que tu t'adresses directement à l'utilisateur sur Slack, réponds en TEXTE NORMAL."""
+Si tes actions sont achevées et que tu t'adresses directement au chef d'entreprise sur Slack, réponds en TEXTE CLAIR ET STRUCTURÉ."""
 
 # ==========================================
 # 1. DÉFINITION DES OUTILS DE L'AGENT
 # ==========================================
 
 def read_github_file(file_path: str) -> str:
-    """Lit un fichier .md de consignes ou de rapport directement sur GitHub."""
+    """Lit un fichier .md de consignes ou de rapport directement sur GitHub ou en local."""
     try:
         if not GITHUB_TOKEN or not GITHUB_REPO:
             if os.path.exists(file_path):
                 with open(file_path, "r", encoding="utf-8") as f:
                     return f.read()
-            return "Fichier non trouvé en local."
+            return f"Fichier '{file_path}' introuvable en local."
 
         headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
         api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{file_path}"
@@ -98,7 +97,7 @@ def read_github_file(file_path: str) -> str:
         return f"Erreur lecture GitHub: {str(e)}"
 
 def git_commit_and_push(file_path: str, commit_message: str, content_to_write: Union[str, bytes]) -> str:
-    """Publie ou met à jour un fichier texte ou binaire (PDF) sur GitHub."""
+    """Publie ou met à jour un fichier texte ou binaire (PDF) sur le dépôt GitHub."""
     try:
         safe_path = os.path.normpath(file_path).replace("\\", "/")
         os.makedirs(os.path.dirname(safe_path) or ".", exist_ok=True)
@@ -127,8 +126,8 @@ def git_commit_and_push(file_path: str, commit_message: str, content_to_write: U
     except Exception as e:
         return f"ERREUR GITHUB: {str(e)}"
 
-def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "") -> str:
-    """Délègue un volet d'analyse à un sous-agent OpenRouter et sauvegarde le Markdown sur GitHub."""
+def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "", project_context: str = "BailConforme.ca") -> str:
+    """Délègue un volet d'analyse stratégique à un sous-agent expert et sauvegarde le rapport."""
     try:
         model_name = "google/gemma-4-31b:free"
         sub_client = ChatOpenAI(
@@ -138,46 +137,48 @@ def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "
             openai_api_base="https://openrouter.ai/api/v1"
         )
         
-        system_msg = SystemMessage(content=f"Tu es l'équipe {team} pour BailConforme.ca (SaaS Immobilier Québec). Rédige une analyse exhaustive au format Markdown.")
+        system_msg = SystemMessage(
+            content=f"Tu es l'expert du pôle '{team}' pour le projet SaaS '{project_context}'. "
+                    f"Rédige une étude analytique et stratégique exhaustive avec vision prospective et projections de scaling (horizon 2026-2027)."
+        )
         user_msg = HumanMessage(content=task_description)
         
         response = sub_client.invoke([system_msg, user_msg])
         result_text = response.content
         
         if save_to_file:
-            git_commit_and_push(save_to_file, f"Livrable {team}", result_text)
-            return f"SUCCÈS: Rapport de l'équipe {team} publié dans '{save_to_file}' sur GitHub."
+            git_commit_and_push(save_to_file, f"Feat(Analyse): Livrable pôle {team}", result_text)
+            return f"SUCCÈS: Rapport stratégique de l'équipe {team} publié dans '{save_to_file}' sur GitHub."
             
         return result_text[:2000]
     except Exception as e:
         return f"ERREUR DÉLÉGATION {team}: {str(e)}"
 
-def compile_markdowns_to_pdf(output_pdf_path: str = "BailConforme_Analyse_360_Master.pdf") -> str:
-    """Compile l'ensemble des rapports Markdown de docs/analyse_360/ dans un PDF Master poussé sur GitHub."""
+def compile_markdowns_to_pdf(folder_path: str = "docs/analyse_360", output_pdf_path: str = "BailConforme_Analyse_360_Master.pdf") -> str:
+    """Compile l'ensemble des livrables Markdown d'un dossier en un document PDF Master unique."""
     try:
-        folder_path = "docs/analyse_360"
         if not os.path.exists(folder_path):
             return f"ERREUR: Dossier {folder_path} introuvable."
 
         files = sorted([os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith(".md")])
         if not files:
-            return "ERREUR: Aucun rapport Markdown trouvé."
+            return f"ERREUR: Aucun rapport Markdown trouvé dans {folder_path}."
 
         pdf = FPDF()
         pdf.set_auto_page_break(auto=True, margin=15)
         
-        # Page de titre
+        # En-tête / Couverture
         pdf.add_page()
         pdf.set_font("Helvetica", "B", 18)
-        pdf.cell(0, 30, "BailConforme.ca - Master Plan & Document 360°", ln=True, align="C")
+        pdf.cell(0, 30, "BailConforme.ca - Rapport Stratégique Master 360°", ln=True, align="C")
         pdf.set_font("Helvetica", "", 12)
-        pdf.cell(0, 10, "Document Maître rédigé et orchestré par Amal-DG", ln=True, align="C")
+        pdf.cell(0, 10, "Document Unifié d'Analyse B2B - Directrice Générale Amal-DG (Horizon 2026-2027)", ln=True, align="C")
         pdf.ln(15)
 
         for file in files:
             pdf.add_page()
             pdf.set_font("Helvetica", "B", 13)
-            pdf.cell(0, 10, f"Section : {os.path.basename(file)}", ln=True)
+            pdf.cell(0, 10, f"Pôle : {os.path.basename(file)}", ln=True)
             pdf.ln(4)
             
             with open(file, "r", encoding="utf-8") as f:
@@ -188,25 +189,41 @@ def compile_markdowns_to_pdf(output_pdf_path: str = "BailConforme_Analyse_360_Ma
             pdf.multi_cell(0, 5, safe_text)
 
         pdf_bytes = pdf.output()
-        return git_commit_and_push(output_pdf_path, "Feat: Document Master PDF 360°", pdf_bytes)
+        return git_commit_and_push(output_pdf_path, "Feat: Publication Master PDF Stratégique 360°", pdf_bytes)
     except Exception as e:
         return f"ERREUR COMPILATION PDF: {str(e)}"
 
 def tavily_web_search(query: str) -> str:
+    """Recherche web en temps réel pour obtenir des données fraîches du marché et de la législation 2026."""
     if not TAVILY_API_KEY: return "Clé Tavily non configurée."
     try:
         with httpx.Client() as client:
-            res = client.post("https://api.tavily.com/search", json={"api_key": TAVILY_API_KEY, "query": query}, timeout=10.0)
-            return res.json().get("answer", "Aucun résultat.")[:1000]
+            res = client.post("https://api.tavily.com/search", json={"api_key": TAVILY_API_KEY, "query": query}, timeout=12.0)
+            return res.json().get("answer", "Aucun résultat web disponible.")[:1200]
     except Exception as e:
-        return f"Erreur Tavily: {str(e)}"
+        return f"Erreur Tavily Search: {str(e)}"
+
+def firecrawl_scrape_url(url: str) -> str:
+    """Scrape et extrait le texte d'une page Web cible via Firecrawl."""
+    if not FIRECRAWL_API_KEY: return "Clé Firecrawl non configurée."
+    try:
+        headers = {"Authorization": f"Bearer {FIRECRAWL_API_KEY}", "Content-Type": "application/json"}
+        with httpx.Client() as client:
+            res = client.post("https://api.firecrawl.dev/v1/scrape", json={"url": url}, headers=headers, timeout=15.0)
+            if res.status_code == 200:
+                data = res.json().get("data", {})
+                return data.get("markdown", "Contenu extrait vide.")[:1500]
+            return f"Erreur Firecrawl status: {res.status_code}"
+    except Exception as e:
+        return f"Erreur Firecrawl Scrape: {str(e)}"
 
 TOOLS_MAP = {
     "delegate_to_subagent": delegate_to_subagent,
     "read_github_file": read_github_file,
     "git_commit_and_push": git_commit_and_push,
     "compile_markdowns_to_pdf": compile_markdowns_to_pdf,
-    "tavily_web_search": tavily_web_search
+    "tavily_web_search": tavily_web_search,
+    "firecrawl_scrape_url": firecrawl_scrape_url
 }
 
 # ==========================================
@@ -219,18 +236,18 @@ class AgentState(TypedDict):
 llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0, groq_api_key=GROQ_API_KEY)
 
 def prepare_optimized_context(messages: list) -> list:
-    """Tronque intelligemment les sorties d'outils volumineuses pour éviter les saturations de tokens."""
+    """Tronque intelligemment les sorties d'outils volumineuses pour optimiser le contexte."""
     cleaned = []
     for msg in messages:
         if isinstance(msg, HumanMessage) and "--- RÉSULTAT ACTION" in msg.content:
             if len(msg.content) > 400:
-                short_text = msg.content[:200] + "\n... [Résultat complet sauvegardé dans le fichier sur GitHub] ..."
+                short_text = msg.content[:200] + "\n... [Résultat sauvegardé et tronqué pour préserver le contexte] ..."
                 cleaned.append(HumanMessage(content=short_text))
             else:
                 cleaned.append(msg)
         else:
             cleaned.append(msg)
-    return cleaned[-8:]
+    return cleaned[-10:]
 
 def call_model(state: AgentState):
     system_ctx = SystemMessage(content=SYSTEM_PROMPT)
@@ -238,7 +255,7 @@ def call_model(state: AgentState):
     full_messages = [system_ctx] + optimized_history
     
     max_retries = 3
-    retry_delay = 12  # Pause de sécurité en cas de Rate Limit 429 de Groq
+    retry_delay = 10
     
     for attempt in range(max_retries):
         try:
@@ -255,7 +272,7 @@ def call_model(state: AgentState):
                         tool_fn = TOOLS_MAP[action_name]
                         tool_result = tool_fn(**action_input) if isinstance(action_input, dict) else tool_fn(action_input)
                         
-                        tool_msg = HumanMessage(content=f"--- RÉSULTAT ACTION ({action_name}) ---\n{tool_result}\n\nPoursuis la suite des opérations de façon autonome.")
+                        tool_msg = HumanMessage(content=f"--- RÉSULTAT ACTION ({action_name}) ---\n{tool_result}\n\nPoursuis la suite de ton orchestration.")
                         return {"messages": [AIMessage(content=content), tool_msg]}
                 except Exception:
                     pass
@@ -267,10 +284,10 @@ def call_model(state: AgentState):
             if ("rate_limit_exceeded" in error_str or "429" in error_str) and attempt < max_retries - 1:
                 time.sleep(retry_delay)
                 continue
-            return {"messages": [AIMessage(content=f"⚠️ Erreur Moteur : {error_str}")]}
+            return {"messages": [AIMessage(content=f"⚠️ Erreur Moteur Amal-DG : {error_str}")]}
 
 def should_continue(state: AgentState):
-    """Maintient la boucle tant qu'une action est exécutée par l'agent."""
+    """Maintient la boucle tant qu'une action JSON est exécutée par Amal-DG."""
     last_message = state["messages"][-1]
     if isinstance(last_message, HumanMessage) and "--- RÉSULTAT ACTION" in last_message.content:
         return "agent"
@@ -284,7 +301,33 @@ workflow.add_conditional_edges("agent", should_continue, {"agent": "agent", END:
 app_graph = workflow.compile()
 
 # ==========================================
-# 3. ENDPOINTS FASTAPI ET WORKFLOW SLACK
+# 3. KEEPALIVE AUTOMATIQUE (GARDE ACTIF RENDER)
+# ==========================================
+
+async def keep_alive_task():
+    """Tâche d'arrière-plan perpétuelle qui auto-ping la route /health pour éviter la mise en veille du serveur Render."""
+    await asyncio.sleep(15)  # Attente du démarrage complet de FastAPI
+    logging.info("🚀 Système Keep-Alive / Self-Ping initialisé.")
+    
+    async with httpx.AsyncClient() as client:
+        while True:
+            try:
+                target_url = f"{RENDER_EXTERNAL_URL}/health"
+                res = await client.get(target_url, timeout=10.0)
+                logging.info(f" Keep-Alive Self-Ping sur {target_url} - Status: {res.status_code}")
+            except Exception as e:
+                logging.warning(f"⚠️ Erreur Keep-Alive Self-Ping : {e}")
+            
+            # Attente de 10 minutes (600 secondes)
+            await asyncio.sleep(600)
+
+@app.on_event("startup")
+async def startup_event():
+    # Lancement du boucle de garde actif au démarrage
+    asyncio.create_task(keep_alive_task())
+
+# ==========================================
+# 4. ENDPOINTS FASTAPI ET WORKFLOW SLACK
 # ==========================================
 
 def process_slack_mission_async(channel_id: str, user_prompt: str):
@@ -302,12 +345,14 @@ def process_slack_mission_async(channel_id: str, user_prompt: str):
                 json={"channel": channel_id, "text": final_message},
                 headers={"Authorization": f"Bearer {SLACK_TOKEN}", "Content-Type": "application/json"}
             )
-        except: pass
+        except Exception as err:
+            logging.error(f"Erreur envoi Slack : {err}")
 
 @app.post("/slack/events")
 async def slack_events(request: Request, background_tasks: BackgroundTasks):
     data = await request.json()
-    if data.get("type") == "url_verification": return {"challenge": data.get("challenge")}
+    if data.get("type") == "url_verification": 
+        return {"challenge": data.get("challenge")}
         
     event = data.get("event", {})
     if event.get("type") in ["message", "app_mention"] and not event.get("bot_id"):
@@ -320,4 +365,4 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
 
 @app.get("/health")
 def health_check():
-    return {"status": "SAAS-ENGINE-ONLINE-V4.2-FULL"}
+    return {"status": "SAAS-ENGINE-ONLINE-V4.5-KEEPALIVE-ACTIVE"}
