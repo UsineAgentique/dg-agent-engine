@@ -7,4 +7,8 @@ langgraph
 langchain-core
 langchain-groq
 langchain-openai
+groq
+firecrawl-py
+e2b_code_interpreter
+apscheduler
 fpdf2
