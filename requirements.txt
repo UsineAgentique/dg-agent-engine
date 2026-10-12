@@ -6,8 +6,5 @@ supabase
 langgraph
 langchain-core
 langchain-groq
-groq
-firecrawl-py
-e2b_code_interpreter
-apscheduler
+langchain-openai
 fpdf2
