@@ -15,10 +15,10 @@ from langchain_openai import ChatOpenAI
 from supabase import create_client, Client
 from fpdf import FPDF
 
-app = FastAPI(title="DG-AGENT-CORE-SAAS", version="4.0.0")
+app = FastAPI(title="DG-AGENT-CORE-SAAS", version="4.1.0")
 
 # ==========================================
-# 0. CONFIGURATION & CLÉS API
+# 0. CONFIGURATION & CLÉS API (14 SERVICES)
 # ==========================================
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -26,18 +26,20 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 SLACK_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
+E2B_API_KEY = os.getenv("E2B_API_KEY")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPOSITORY")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
-# PROMPT SYSTÈME VERROUILLÉ (CADRAGE STRICT ET IMMUABLE)
+# PROMPT SYSTÈME PERMANENT (CADRAGE STRICT ET ANTI-AMNÉSIE)
 SYSTEM_PROMPT = """Tu es Amal-DG, Directrice Générale et Architecte IA du SaaS Immobilier Québec BailConforme.ca.
 
 CADRAGE STRICT DU PROJET :
 - Projet : BailConforme.ca (SaaS B2B de gestion de baux immobiliers, conformité TAL, Loi 25 et Code civil du Québec).
 - Mission : Orchestrer en autonomie totale la réalisation des études 360°, la conception et la livraison du projet.
-- Règle d'or : Ne perds JAMAIS ce contexte. Ne réponds jamais sur des généralités SaaS B2B ou d'autres marchés.
+- Règle d'or : Ne perds JAMAIS ce contexte. Ne réponds jamais sur des généralités SaaS B2B mondial ou d'autres secteurs.
 
 FORMAT DE RÉPONSE POUR EXÉCUTER UNE ACTION :
 Réponds EXCLUSIVEMENT sous forme d'un objet JSON valide (aucun texte autour) :
@@ -53,29 +55,29 @@ OUTILS DISPONIBLES :
    Arguments : {"file_path": "docs/rules.md"}
 3. `git_commit_and_push` : Enregistre/déploie un fichier sur GitHub.
    Arguments : {"file_path": "...", "commit_message": "...", "content_to_write": "..."}
-4. `compile_markdowns_to_pdf` : Compile l'ensemble des rapports Markdown en un document PDF Master.
+4. `compile_markdowns_to_pdf` : Compile tous les rapports Markdown en un document PDF Master.
    Arguments : {"output_pdf_path": "BailConforme_Analyse_360_Master.pdf"}
 5. `tavily_web_search` : Effectue une recherche web ciblée.
    Arguments : {"query": "..."}
 
-LES 8 PÔLES À EXÉCUTER :
-- `team3_product` (Produit & R&D) ➔ `docs/analyse_360/01_produit.md`
-- `team_dev` (Dev & Architecture) ➔ `docs/analyse_360/02_architecture.md`
-- `team5_growth_seo` (Growth & SEO) ➔ `docs/analyse_360/03_growth.md`
-- `team_sales` (Ventes & ABM) ➔ `docs/analyse_360/04_ventes_abm.md`
-- `team_finance` (Finance & Pricing) ➔ `docs/analyse_360/05_finance.md`
-- `team_legal` (Juridique & Conformité TAL/Loi 25) ➔ `docs/analyse_360/06_conformite.md`
-- `team_ux` (UX/UI & Design) ➔ `docs/analyse_360/07_ux_design.md`
-- `team_secops` (SecOps & Souveraineté) ➔ `docs/analyse_360/08_secops.md`
+LES 8 PÔLES À EXÉCUTER SÉQUENTIELLEMENT :
+1. `team3_product` (Produit & R&D) ➔ `docs/analyse_360/01_produit.md`
+2. `team_dev` (Dev & Architecture) ➔ `docs/analyse_360/02_architecture.md`
+3. `team5_growth_seo` (Growth & SEO) ➔ `docs/analyse_360/03_growth.md`
+4. `team_sales` (Ventes & ABM) ➔ `docs/analyse_360/04_ventes_abm.md`
+5. `team_finance` (Finance & Pricing) ➔ `docs/analyse_360/05_finance.md`
+6. `team_legal` (Juridique & Conformité TAL/Loi 25) ➔ `docs/analyse_360/06_conformite.md`
+7. `team_ux` (UX/UI & Design) ➔ `docs/analyse_360/07_ux_design.md`
+8. `team_secops` (SecOps & Souveraineté) ➔ `docs/analyse_360/08_secops.md`
 
 Si toutes tes actions sont terminées et que tu t'adresses directement à l'utilisateur sur Slack, réponds en TEXTE NORMAL."""
 
 # ==========================================
-# 1. DÉFINITION DES OUTILS
+# 1. DÉFINITION DES OUTILS DE L'AGENT
 # ==========================================
 
 def read_github_file(file_path: str) -> str:
-    """Lit un fichier .md de consignes ou de rapport sur GitHub."""
+    """Lit un fichier .md de consignes ou de rapport directement sur GitHub."""
     try:
         if not GITHUB_TOKEN or not GITHUB_REPO:
             if os.path.exists(file_path):
@@ -95,7 +97,7 @@ def read_github_file(file_path: str) -> str:
         return f"Erreur lecture GitHub: {str(e)}"
 
 def git_commit_and_push(file_path: str, commit_message: str, content_to_write: Union[str, bytes]) -> str:
-    """Publie ou met à jour n'importe quel fichier sur GitHub."""
+    """Publie ou met à jour un fichier texte ou binaire (PDF) sur GitHub."""
     try:
         safe_path = os.path.normpath(file_path).replace("\\", "/")
         os.makedirs(os.path.dirname(safe_path) or ".", exist_ok=True)
@@ -108,7 +110,7 @@ def git_commit_and_push(file_path: str, commit_message: str, content_to_write: U
             content_b64 = base64.b64encode(content_to_write.encode("utf-8")).decode("utf-8")
 
         if not GITHUB_TOKEN or not GITHUB_REPO:
-            return f"Fichier {file_path} créé en local (variables GitHub absentes)."
+            return f"Fichier {file_path} créé en local (variables GitHub non configurées)."
 
         headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
         api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{safe_path}"
@@ -125,7 +127,7 @@ def git_commit_and_push(file_path: str, commit_message: str, content_to_write: U
         return f"ERREUR GITHUB: {str(e)}"
 
 def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "") -> str:
-    """Délègue une étude à un sous-agent OpenRouter et enregistre le Markdown."""
+    """Délègue un volet d'analyse à un sous-agent OpenRouter et sauvegarde le Markdown sur GitHub."""
     try:
         model_name = "google/gemma-4-31b:free"
         sub_client = ChatOpenAI(
@@ -135,7 +137,7 @@ def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "
             openai_api_base="https://openrouter.ai/api/v1"
         )
         
-        system_msg = SystemMessage(content=f"Tu es l'équipe {team} experte pour BailConforme.ca (SaaS Immobilier Québec). Rédige une étude approfondie et exhaustive au format Markdown.")
+        system_msg = SystemMessage(content=f"Tu es l'équipe {team} pour BailConforme.ca (SaaS Immobilier Québec). Rédige une analyse exhaustive au format Markdown.")
         user_msg = HumanMessage(content=task_description)
         
         response = sub_client.invoke([system_msg, user_msg])
@@ -150,7 +152,7 @@ def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "
         return f"ERREUR DÉLÉGATION {team}: {str(e)}"
 
 def compile_markdowns_to_pdf(output_pdf_path: str = "BailConforme_Analyse_360_Master.pdf") -> str:
-    """Compile tous les rapports Markdown de docs/analyse_360/ en un PDF Master."""
+    """Compile l'ensemble des rapports Markdown de docs/analyse_360/ dans un PDF Master poussé sur GitHub."""
     try:
         folder_path = "docs/analyse_360"
         if not os.path.exists(folder_path):
@@ -216,7 +218,7 @@ class AgentState(TypedDict):
 llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0, groq_api_key=GROQ_API_KEY)
 
 def prepare_optimized_context(messages: list) -> list:
-    """Optimise la fenêtre de contexte en tronquant les sorties d'outils volumineuses."""
+    """Tronque intelligemment les sorties d'outils volumineuses pour éviter les saturations de tokens."""
     cleaned = []
     for msg in messages:
         if isinstance(msg, HumanMessage) and "--- RÉSULTAT ACTION" in msg.content:
@@ -227,7 +229,6 @@ def prepare_optimized_context(messages: list) -> list:
                 cleaned.append(msg)
         else:
             cleaned.append(msg)
-    # Conservation des 8 derniers messages significatifs
     return cleaned[-8:]
 
 def call_model(state: AgentState):
@@ -256,7 +257,7 @@ def call_model(state: AgentState):
     return {"messages": [response]}
 
 def should_continue(state: AgentState):
-    """Boucle automatique tant qu'une action est exécutée."""
+    """Maintient la boucle tant qu'une action est exécutée par l'agent."""
     last_message = state["messages"][-1]
     if isinstance(last_message, HumanMessage) and "--- RÉSULTAT ACTION" in last_message.content:
         return "agent"
@@ -270,7 +271,7 @@ workflow.add_conditional_edges("agent", should_continue, {"agent": "agent", END:
 app_graph = workflow.compile()
 
 # ==========================================
-# 3. FASTAPI ET SLACK INTEGRATION
+# 3. ENDPOINTS FASTAPI ET WORKFLOW SLACK
 # ==========================================
 
 def process_slack_mission_async(channel_id: str, user_prompt: str):
@@ -306,4 +307,4 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
 
 @app.get("/health")
 def health_check():
-    return {"status": "SAAS-ENGINE-ONLINE-V4-OPTIMIZED"}
+    return {"status": "SAAS-ENGINE-ONLINE-V4.1-FULL"}
