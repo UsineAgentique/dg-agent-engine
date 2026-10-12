@@ -109,8 +109,8 @@ def git_commit_and_push(file_path: str, commit_message: str, content_to_write: s
 
 def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "") -> str:
     try:
-        # Pôles d'analyse lourde et dev orientés vers Llama 3.3 70B
-        model_name = "llama-3.3-70b-versatile" if team in ["team_dev", "team3_product", "team5_growth_seo"] else "llama-3.1-8b-instant"
+        # Modèle Qwen 32B dédié pour l'ensemble des sous-agents (100% Gratuit sur Groq)
+        model_name = "qwen/qwen3-32b"
         groq_client = ChatGroq(model=model_name, temperature=0.2, groq_api_key=GROQ_API_KEY)
         
         system_msg = SystemMessage(content=f"Tu es l'équipe spécialisée {team}. Exécute la mission de manière exhaustive. Rédige un rapport ou du code complet.")
