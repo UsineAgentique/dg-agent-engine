@@ -10,3 +10,4 @@ groq
 firecrawl-py
 e2b_code_interpreter
 apscheduler
+fpdf2
