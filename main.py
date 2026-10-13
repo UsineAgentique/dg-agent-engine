@@ -7,6 +7,7 @@ import operator
 import logging
 import asyncio
 from typing import TypedDict, Annotated, List, Union
+from datetime import datetime
 
 from fastapi import FastAPI, Request, BackgroundTasks, Response
 import httpx
@@ -21,7 +22,7 @@ from fpdf import FPDF
 # Configuration des logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="DG-AGENT-CORE-SAAS", version="4.5.0")
+app = FastAPI(title="DG-AGENT-CORE-SAAS", version="4.8.0")
 
 # ==========================================
 # 0. CONFIGURATION & CLÉS API (14 SERVICES)
@@ -40,14 +41,26 @@ RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://dg-agent-engine.
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
-# PROMPT SYSTÈME MULTI-PROJETS & ORCHESTRATION D'AGENTS
+# SUIVI DYNAMIQUE DE LA SANTÉ DES MODÈLES (CIRCUIT BREAKER EN MÉMOIRE)
+MODEL_HEALTH = {
+    "google/gemma-4-31b-it:free": {"status": "HEALTHY", "fails": 0},
+    "z-ai/glm-5.2:free": {"status": "HEALTHY", "fails": 0},
+    "google/gemma-4-26b-a4b-it:free": {"status": "HEALTHY", "fails": 0}
+}
+
+# PROMPT SYSTÈME : AMAL-DG CHOISIT LE PROFIL SELON LA MISSION DE CHAQUE PÔLE
 SYSTEM_PROMPT = """Tu es Amal-DG, Directrice Générale, Architecte IA et Super-Orchestratrice du portefeuille SaaS B2B.
 
-RÔLE ET SKILLS MULTI-PROJETS :
-1. Orchestration Multi-Projets : Tu pilotes le projet phare BailConforme.ca (SaaS B2B Immobilier Québec : conformité TAL, Loi 25, Code civil) ainsi que tout autre projet/SaaS B2B assigné dans ton portefeuille.
-2. Direction de 8 Pôles Spécialisés : Tu délègues, contrôles et unifies les travaux analytiques de 8 sous-agents (Produit, Architecture, Growth/SEO, Ventes ABM, Finance, Juridique, UX/UI, SecOps).
-3. Posture 100% Stratégique et Prospective : Tes analyses se concentrent sur la logique d'affaires, la valeur ajoutée, l'intelligence d'analyse et les projections de scaling (horizon 2026-2027+).
-4. Recherche Temps Réel (Web Search) : Tu exiges de tes sous-agents et de toi-même l'utilisation de `tavily_web_search` et `firecrawl_scrape_url` pour vous appuyer sur des données réelles et à jour sur Internet (pas de suppositions figees).
+RÔLE ET ROUTAGE DES 8 PÔLES D'ANALYSE :
+Tu pilotes 8 pôles d'expertise. Pour chaque délégation (`delegate_to_subagent`), tu dois évaluer la nature de la tâche et choisir le profil de modèle le plus adapté :
+1. `analytique` (`google/gemma-4-31b-it:free`) : À choisir pour les études nécessitant une grande profondeur rédactionnelle, une vision marché et stratégie (ex: Produit, Growth/SEO, Ventes, UX/UI).
+2. `juridique` (`z-ai/glm-5.2:free`) : À choisir pour les analyses exigeant une rigueur absolue, la conformité aux lois et la logique procédurale (ex: Juridique/TAL/Loi 25, Finance).
+3. `technique` (`google/gemma-4-26b-a4b-it:free`) : À choisir pour la conception technique, l'infrastructure et la sécurité (ex: Architecture/Dev, SecOps).
+
+CONSIGNES STRICTES :
+- Projet phare : BailConforme.ca (SaaS B2B Immobilier Québec : conformité TAL, Loi 25, Code civil) et tout SaaS B2B du portefeuille.
+- Horizon temporel : 2026-2027.
+- Utilise `tavily_web_search` et `firecrawl_scrape_url` pour baser tes requêtes sur des données actuelles du marché et de la législation.
 
 FORMAT DE RÉPONSE POUR EXÉCUTER UNE ACTION :
 Réponds EXCLUSIVEMENT sous forme d'un objet JSON valide (aucun texte autour) :
@@ -57,20 +70,20 @@ Réponds EXCLUSIVEMENT sous forme d'un objet JSON valide (aucun texte autour) :
 }
 
 BOÎTE À OUTILS DE DÉLÉGATION ET D'EXÉCUTION :
-1. `delegate_to_subagent` : Mandate un sous-agent spécialisé pour une étude approfondie.
-   Arguments : {"team": "team3_product", "task_description": "...", "save_to_file": "docs/analyse_360/01_produit.md", "project_context": "BailConforme.ca"}
-2. `tavily_web_search` : Recherche d'informations réelles et actuelles sur Internet (Lois, Marché, Tarifs 2026).
+1. `delegate_to_subagent` : Mandate un sous-agent spécialisé en précisant le profil de modèle adéquat.
+   Arguments : {"team": "team3_product", "task_description": "...", "save_to_file": "docs/analyse_360/01_produit.md", "model_profile": "analytique | juridique | technique", "project_context": "BailConforme.ca"}
+2. `tavily_web_search` : Recherche d'informations réelles et actuelles sur Internet.
    Arguments : {"query": "..."}
-3. `firecrawl_scrape_url` : Extrait et scrape le contenu structuré d'une page Web.
+3. `firecrawl_scrape_url` : Extrait et scrape le contenu d'une page Web.
    Arguments : {"url": "..."}
 4. `git_commit_and_push` : Enregistre ou déploie un livrable Markdown/PDF sur GitHub.
    Arguments : {"file_path": "...", "commit_message": "...", "content_to_write": "..."}
 5. `read_github_file` : Lit un rapport ou un fichier de consignes.
    Arguments : {"file_path": "..."}
-6. `compile_markdowns_to_pdf` : Unifie et compile tous les rapports d'études en un Master PDF.
+6. `compile_markdowns_to_pdf` : Compile les rapports d'études en un Master PDF.
    Arguments : {"folder_path": "docs/analyse_360", "output_pdf_path": "BailConforme_Analyse_360_Master.pdf"}
 
-Si tes actions sont achevées et que tu t'adresses directement au chef d'entreprise sur Slack, réponds en TEXTE CLAIR ET STRUCTURÉ."""
+Si tes actions sont achevées, réponds directement sur Slack en TEXTE CLAIR ET STRUCTURÉ."""
 
 # ==========================================
 # 1. DÉFINITION DES OUTILS DE L'AGENT
@@ -126,33 +139,62 @@ def git_commit_and_push(file_path: str, commit_message: str, content_to_write: U
     except Exception as e:
         return f"ERREUR GITHUB: {str(e)}"
 
-def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "", project_context: str = "BailConforme.ca") -> str:
-    """Délègue un volet d'analyse stratégique à un sous-agent expert et sauvegarde le rapport."""
-    try:
-        model_name = "google/gemma-4-31b:free"
-        sub_client = ChatOpenAI(
-            model=model_name,
-            temperature=0.2,
-            openai_api_key=OPENROUTER_API_KEY,
-            openai_api_base="https://openrouter.ai/api/v1"
-        )
-        
-        system_msg = SystemMessage(
-            content=f"Tu es l'expert du pôle '{team}' pour le projet SaaS '{project_context}'. "
-                    f"Rédige une étude analytique et stratégique exhaustive avec vision prospective et projections de scaling (horizon 2026-2027)."
-        )
-        user_msg = HumanMessage(content=task_description)
-        
-        response = sub_client.invoke([system_msg, user_msg])
-        result_text = response.content
-        
-        if save_to_file:
-            git_commit_and_push(save_to_file, f"Feat(Analyse): Livrable pôle {team}", result_text)
-            return f"SUCCÈS: Rapport stratégique de l'équipe {team} publié dans '{save_to_file}' sur GitHub."
+def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "", model_profile: str = "analytique", project_context: str = "BailConforme.ca") -> str:
+    """Délègue la tâche au sous-agent en utilisant le modèle spécialisé choisi par Amal-DG avec gestion automatique des pannes."""
+    models_catalog = {
+        "analytique": "google/gemma-4-31b-it:free",
+        "juridique": "z-ai/glm-5.2:free",
+        "technique": "google/gemma-4-26b-a4b-it:free"
+    }
+    
+    primary_model = models_catalog.get(model_profile, "google/gemma-4-31b-it:free")
+    fallback_model = "z-ai/glm-5.2:free"
+    
+    active_model = primary_model
+    if MODEL_HEALTH.get(primary_model, {}).get("status") == "UNHEALTHY":
+        active_model = fallback_model
+
+    for attempt in range(2):
+        try:
+            sub_client = ChatOpenAI(
+                model=active_model,
+                temperature=0.2,
+                openai_api_key=OPENROUTER_API_KEY,
+                openai_api_base="https://openrouter.ai/api/v1"
+            )
             
-        return result_text[:2000]
-    except Exception as e:
-        return f"ERREUR DÉLÉGATION {team}: {str(e)}"
+            system_msg = SystemMessage(
+                content=f"Tu es l'expert du pôle '{team}' pour le projet SaaS '{project_context}' (Moteur: {active_model}). "
+                        f"Rédige une étude analytique et stratégique exhaustive avec vision prospective (horizon 2026-2027)."
+            )
+            user_msg = HumanMessage(content=task_description)
+            
+            response = sub_client.invoke([system_msg, user_msg])
+            result_text = response.content
+            
+            MODEL_HEALTH[active_model]["fails"] = 0
+            MODEL_HEALTH[active_model]["status"] = "HEALTHY"
+            
+            if save_to_file:
+                git_commit_and_push(save_to_file, f"Feat({team}): Livrable via profil {model_profile}", result_text)
+                return f"SUCCÈS: Rapport du pôle {team} (profil {model_profile}) sauvegardé dans '{save_to_file}'."
+                
+            return result_text[:2000]
+            
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "rate_limit" in error_str.lower():
+                MODEL_HEALTH[active_model]["fails"] += 1
+                if MODEL_HEALTH[active_model]["fails"] >= 2:
+                    MODEL_HEALTH[active_model]["status"] = "UNHEALTHY"
+                
+                active_model = fallback_model
+                time.sleep(3)
+                continue
+            else:
+                return f"ERREUR DÉLÉGATION {team}: {error_str}"
+                
+    return f"ERREUR CRITIQUE {team}: Échec de l'exécution après plusieurs tentatives."
 
 def compile_markdowns_to_pdf(folder_path: str = "docs/analyse_360", output_pdf_path: str = "BailConforme_Analyse_360_Master.pdf") -> str:
     """Compile l'ensemble des livrables Markdown d'un dossier en un document PDF Master unique."""
@@ -167,7 +209,6 @@ def compile_markdowns_to_pdf(folder_path: str = "docs/analyse_360", output_pdf_p
         pdf = FPDF()
         pdf.set_auto_page_break(auto=True, margin=15)
         
-        # En-tête / Couverture
         pdf.add_page()
         pdf.set_font("Helvetica", "B", 18)
         pdf.cell(0, 30, "BailConforme.ca - Rapport Stratégique Master 360°", ln=True, align="C")
@@ -194,7 +235,7 @@ def compile_markdowns_to_pdf(folder_path: str = "docs/analyse_360", output_pdf_p
         return f"ERREUR COMPILATION PDF: {str(e)}"
 
 def tavily_web_search(query: str) -> str:
-    """Recherche web en temps réel pour obtenir des données fraîches du marché et de la législation 2026."""
+    """Recherche web en temps réel pour obtenir des données fraîches du marché et de la législation."""
     if not TAVILY_API_KEY: return "Clé Tavily non configurée."
     try:
         with httpx.Client() as client:
@@ -233,7 +274,10 @@ TOOLS_MAP = {
 class AgentState(TypedDict):
     messages: Annotated[List, operator.add]
 
-llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0, groq_api_key=GROQ_API_KEY)
+# Moteur principal Amal-DG (Groq) + Moteur de secours gratuit (OpenRouter GLM-5.2)
+llm_primary = ChatGroq(model="openai/gpt-oss-120b", temperature=0, groq_api_key=GROQ_API_KEY)
+llm_fallback = ChatOpenAI(model="z-ai/glm-5.2:free", temperature=0, openai_api_key=OPENROUTER_API_KEY, openai_api_base="https://openrouter.ai/api/v1")
+llm = llm_primary.with_fallbacks([llm_fallback])
 
 def prepare_optimized_context(messages: list) -> list:
     """Tronque intelligemment les sorties d'outils volumineuses pour optimiser le contexte."""
@@ -306,7 +350,7 @@ app_graph = workflow.compile()
 
 async def keep_alive_task():
     """Tâche d'arrière-plan perpétuelle qui auto-ping la route /health pour éviter la mise en veille du serveur Render."""
-    await asyncio.sleep(15)  # Attente du démarrage complet de FastAPI
+    await asyncio.sleep(15)
     logging.info("🚀 Système Keep-Alive / Self-Ping initialisé.")
     
     async with httpx.AsyncClient() as client:
@@ -314,16 +358,14 @@ async def keep_alive_task():
             try:
                 target_url = f"{RENDER_EXTERNAL_URL}/health"
                 res = await client.get(target_url, timeout=10.0)
-                logging.info(f" Keep-Alive Self-Ping sur {target_url} - Status: {res.status_code}")
+                logging.info(f"Keep-Alive Self-Ping sur {target_url} - Status: {res.status_code}")
             except Exception as e:
                 logging.warning(f"⚠️ Erreur Keep-Alive Self-Ping : {e}")
             
-            # Attente de 10 minutes (600 secondes)
             await asyncio.sleep(600)
 
 @app.on_event("startup")
 async def startup_event():
-    # Lancement du boucle de garde actif au démarrage
     asyncio.create_task(keep_alive_task())
 
 # ==========================================
@@ -365,4 +407,7 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
 
 @app.get("/health")
 def health_check():
-    return {"status": "SAAS-ENGINE-ONLINE-V4.5-KEEPALIVE-ACTIVE"}
+    return {
+        "status": "SAAS-ENGINE-ONLINE-V4.8.0-AUTONOMOUS-ROUTING-ACTIVE",
+        "models_health": MODEL_HEALTH
+    }
