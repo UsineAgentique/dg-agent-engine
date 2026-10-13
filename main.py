@@ -10,6 +10,7 @@ from typing import TypedDict, Annotated, List, Union
 from datetime import datetime
 
 from fastapi import FastAPI, Request, BackgroundTasks, Response
+from fastapi.middleware.cors import CORSMiddleware
 import httpx
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
@@ -22,7 +23,18 @@ from fpdf import FPDF
 # Configuration des logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="DG-AGENT-CORE-SAAS", version="4.8.0")
+app = FastAPI(title="DG-AGENT-CORE-SAAS", version="4.9.0")
+
+# ==========================================
+# ACTIVATION DU CORS POUR DASHBOARD VERCEL
+# ==========================================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ==========================================
 # 0. CONFIGURATION & CLÉS API (14 SERVICES)
@@ -47,6 +59,22 @@ MODEL_HEALTH = {
     "z-ai/glm-5.2:free": {"status": "HEALTHY", "fails": 0},
     "google/gemma-4-26b-a4b-it:free": {"status": "HEALTHY", "fails": 0}
 }
+
+# REGISTRE DES DÉCISIONS ET DES LOGS D'EXÉCUTION POUR VERCEL
+EXECUTION_LOGS = []
+
+def record_log(pole: str, status: str, model: str, details: str):
+    """Enregistre un événement dans l'historique pour le dashboard."""
+    log_entry = {
+        "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "pole": pole,
+        "status": status,
+        "model": model,
+        "details": details
+    }
+    EXECUTION_LOGS.insert(0, log_entry)
+    if len(EXECUTION_LOGS) > 50:
+        EXECUTION_LOGS.pop()
 
 # PROMPT SYSTÈME : AMAL-DG CHOISIT LE PROFIL SELON LA MISSION DE CHAQUE PÔLE
 SYSTEM_PROMPT = """Tu es Amal-DG, Directrice Générale, Architecte IA et Super-Orchestratrice du portefeuille SaaS B2B.
@@ -156,6 +184,8 @@ def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "
 
     for attempt in range(2):
         try:
+            record_log(team, "IN_PROGRESS", active_model, f"Génération du rapport via profil {model_profile}")
+            
             sub_client = ChatOpenAI(
                 model=active_model,
                 temperature=0.2,
@@ -177,33 +207,42 @@ def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "
             
             if save_to_file:
                 git_commit_and_push(save_to_file, f"Feat({team}): Livrable via profil {model_profile}", result_text)
+                record_log(team, "SUCCESS", active_model, f"Sauvegardé dans {save_to_file}")
                 return f"SUCCÈS: Rapport du pôle {team} (profil {model_profile}) sauvegardé dans '{save_to_file}'."
                 
+            record_log(team, "SUCCESS", active_model, "Rapport généré directement")
             return result_text[:2000]
             
         except Exception as e:
             error_str = str(e)
+            record_log(team, "WARNING", active_model, f"Erreur interceptée: {error_str}")
             if "429" in error_str or "rate_limit" in error_str.lower():
                 MODEL_HEALTH[active_model]["fails"] += 1
                 if MODEL_HEALTH[active_model]["fails"] >= 2:
                     MODEL_HEALTH[active_model]["status"] = "UNHEALTHY"
                 
                 active_model = fallback_model
+                record_log(team, "FALLBACK", active_model, "Bascule automatique vers modèle de secours")
                 time.sleep(3)
                 continue
             else:
+                record_log(team, "FAILED", active_model, error_str)
                 return f"ERREUR DÉLÉGATION {team}: {error_str}"
                 
+    record_log(team, "CRITICAL", active_model, "Échec global après toutes les tentatives")
     return f"ERREUR CRITIQUE {team}: Échec de l'exécution après plusieurs tentatives."
 
 def compile_markdowns_to_pdf(folder_path: str = "docs/analyse_360", output_pdf_path: str = "BailConforme_Analyse_360_Master.pdf") -> str:
     """Compile l'ensemble des livrables Markdown d'un dossier en un document PDF Master unique."""
     try:
+        record_log("COMPILER_PDF", "IN_PROGRESS", "FPDF", f"Compilation des fichiers du dossier {folder_path}")
         if not os.path.exists(folder_path):
+            record_log("COMPILER_PDF", "FAILED", "FPDF", f"Dossier {folder_path} introuvable")
             return f"ERREUR: Dossier {folder_path} introuvable."
 
         files = sorted([os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith(".md")])
         if not files:
+            record_log("COMPILER_PDF", "FAILED", "FPDF", "Aucun fichier Markdown à compiler")
             return f"ERREUR: Aucun rapport Markdown trouvé dans {folder_path}."
 
         pdf = FPDF()
@@ -230,8 +269,11 @@ def compile_markdowns_to_pdf(folder_path: str = "docs/analyse_360", output_pdf_p
             pdf.multi_cell(0, 5, safe_text)
 
         pdf_bytes = pdf.output()
-        return git_commit_and_push(output_pdf_path, "Feat: Publication Master PDF Stratégique 360°", pdf_bytes)
+        res = git_commit_and_push(output_pdf_path, "Feat: Publication Master PDF Stratégique 360°", pdf_bytes)
+        record_log("COMPILER_PDF", "SUCCESS", "FPDF", f"Master PDF généré et publié: {output_pdf_path}")
+        return res
     except Exception as e:
+        record_log("COMPILER_PDF", "FAILED", "FPDF", str(e))
         return f"ERREUR COMPILATION PDF: {str(e)}"
 
 def tavily_web_search(query: str) -> str:
@@ -369,16 +411,29 @@ async def startup_event():
     asyncio.create_task(keep_alive_task())
 
 # ==========================================
-# 4. ENDPOINTS FASTAPI ET WORKFLOW SLACK
+# 4. ENDPOINTS FASTAPI, DASHBOARD API & SLACK
 # ==========================================
 
+@app.get("/api/dashboard-data")
+def get_dashboard_data():
+    """Endpoint consommé en temps réel par le Dashboard Vercel."""
+    return {
+        "server_status": "ONLINE",
+        "version": "4.9.0",
+        "models_health": MODEL_HEALTH,
+        "execution_history": EXECUTION_LOGS
+    }
+
 def process_slack_mission_async(channel_id: str, user_prompt: str):
+    record_log("ORCHESTRATOR", "STARTED", "openai/gpt-oss-120b", f"Nouvelle mission déclenchée depuis Slack: {user_prompt[:50]}...")
     conversation_history = [HumanMessage(content=user_prompt)]
     try:
         final_state = app_graph.invoke({"messages": conversation_history})
         final_message = final_state["messages"][-1].content
+        record_log("ORCHESTRATOR", "COMPLETED", "openai/gpt-oss-120b", "Mission terminée avec succès")
     except Exception as e:
         final_message = f"⚠️ *Erreur Moteur Amal-DG* : {str(e)}"
+        record_log("ORCHESTRATOR", "FAILED", "openai/gpt-oss-120b", str(e))
 
     if SLACK_TOKEN:
         try:
@@ -408,6 +463,6 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
 @app.get("/health")
 def health_check():
     return {
-        "status": "SAAS-ENGINE-ONLINE-V4.8.0-AUTONOMOUS-ROUTING-ACTIVE",
+        "status": "SAAS-ENGINE-ONLINE-V4.9.0-DASHBOARD-CORS-ACTIVE",
         "models_health": MODEL_HEALTH
     }
