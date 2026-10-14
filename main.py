@@ -35,7 +35,7 @@ except ImportError:
 # Configuration des logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="8.0.1")
+app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="8.0.2")
 
 app.add_middleware(
     CORSMiddleware,
@@ -105,7 +105,7 @@ TES POSTURES, COMPÉTENCES ET DIRECTIVES EXEC :
 
 3. RIGUEUR & STANDARDS PMP® (PROJECT MANAGEMENT PROFESSIONAL) :
    - Gestion des Risques : Identification active des blocages (techniques, juridiques, ressources) et plans de mitigation.
-   - Gestion du Périmètre (Scope Management) : Évite le "Scope Creep", cadre strictly les fonctionnalités.
+   - Gestion du Périmètre (Scope Management) : Évite le "Scope Creep", cadre strictement les fonctionnalités.
    - Qualité & Conformité (QA) : Tolérance zéro pour le code instable ou non documenté.
 
 4. GESTION DU PORTEFEUILLE MULTI-PROJETS :
@@ -372,7 +372,7 @@ async def keep_alive_task():
             await asyncio.sleep(600)
 
 def send_slack_message(channel: str, text: str):
-    """Fonction d'envoi Slack dédiée et ultra-sécurisée."""
+    """Fonction d'envoi Slack dédiée et ultra-sécurisée via f-string segmenté."""
     if not SLACK_TOKEN:
         logging.error("Pas de token Slack configuré.")
         return
@@ -382,8 +382,11 @@ def send_slack_message(channel: str, text: str):
         logging.error("Format de token Slack invalide.")
         return
 
-    # URL brute sans aucune mise en forme
-    url = "[https://slack.com/api/chat.postMessage](https://slack.com/api/chat.postMessage)"
+    # Utilisation d'une f-string segmentée immunisée contre l'encodage Markdown
+    protocol = "https"
+    domain = "slack.com"
+    endpoint = "/api/chat.postMessage"
+    url = f"{protocol}://{domain}{endpoint}"
 
     try:
         with httpx.Client(timeout=15.0) as client:
@@ -426,7 +429,7 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
 def get_dashboard_data():
     return {
         "server_status": "ONLINE",
-        "version": "8.0.1",
+        "version": "8.0.2",
         "executive_standards": ["SILICON_VALLEY_CEO", "PMP_RIGOR", "AGILE_SCRUM", "FULL_AUTONOMY"],
         "models_health": MODEL_HEALTH,
         "execution_history": EXECUTION_LOGS
@@ -434,4 +437,4 @@ def get_dashboard_data():
 
 @app.get("/health")
 def health_check():
-    return {"status": "ONLINE", "version": "8.0.1"}
+    return {"status": "ONLINE", "version": "8.0.2"}
