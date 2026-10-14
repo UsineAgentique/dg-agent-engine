@@ -6,7 +6,7 @@ import base64
 import operator
 import logging
 import asyncio
-from typing import TypedDict, Annotated, List, Union, Dict, Any
+from typing import TypedDict, Annotated, List, Union
 from datetime import datetime
 
 from fastapi import FastAPI, Request, BackgroundTasks, Response
@@ -15,6 +15,7 @@ import httpx
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langgraph.graph import StateGraph, END
+from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
 from supabase import create_client, Client
 from fpdf import FPDF
@@ -22,7 +23,7 @@ from fpdf import FPDF
 # Configuration des logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="AMAL-DG-CORE-MULTI-TENANT-SWARM", version="6.0.0")
+app = FastAPI(title="AMAL-DG-CORE-MULTI-TENANT-SWARM", version="6.1.0")
 
 # ==========================================
 # ACTIVATION DU CORS POUR DASHBOARD VERCEL
@@ -51,10 +52,10 @@ RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://dg-agent-engine.
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
-# MATRICE D'ARCHITECTURE 4 LLM & CIRCUIT BREAKER DYNAMIQUE
+# MATRICE D'ARCHITECTURE LLM & CIRCUIT BREAKER DYNAMIQUE
 MODEL_HEALTH = {
-    "google/gemma-4-31b-it:free": {"status": "HEALTHY", "fails": 0, "role": "Master Core Primary"},
-    "z-ai/glm-5.2:free": {"status": "HEALTHY", "fails": 0, "role": "Master Strategy Backup"},
+    "openai/gpt-oss-120b": {"status": "HEALTHY", "fails": 0, "role": "Master Core Primary (Groq)"},
+    "z-ai/glm-5.2:free": {"status": "HEALTHY", "fails": 0, "role": "Master Strategy Backup & Juridique"},
     "google/gemma-4-26b:free": {"status": "HEALTHY", "fails": 0, "role": "Worker A (Execution & Code)"},
     "meta-llama/llama-3-8b:free": {"status": "HEALTHY", "fails": 0, "role": "Worker B (Specialized Sub-Agents)"}
 }
@@ -89,9 +90,9 @@ TES POUVOIRS & RESPONSABILITÉS D'INFRASTRUCTURE ET DE GESTION :
    - Pôle 05: Sécurité & Privacy | Pôle 06: QA & Tests Automatisés | Pôle 07: DevOps & Pipelines | Pôle 08: Master Orchestration
    - Tu définis, crées et assignes dynamiquement des sous-agents selon la complexité du projet et la charge.
 
-3. ROUTAGE ET PILOTAGE DES 4 MODÈLES LLM :
-   - `google/gemma-4-31b-it:free` : Master Primary (Vision globale, orchestration haute niveau).
-   - `z-ai/glm-5.2:free` : Strategy Backup & Juridique/Rigueur (Rapports complexes, conformité, failover).
+3. ROUTAGE ET PILOTAGE DES MODÈLES LLM :
+   - `openai/gpt-oss-120b` (Groq) : Master Primary (Orchestration centrale haute vitesse).
+   - `z-ai/glm-5.2:free` : Strategy Backup & Juridique/Rigueur (Conformité, rapports complexes, failover).
    - `google/gemma-4-26b:free` : Worker A (Code, architecture technique, scripts backend/frontend).
    - `meta-llama/llama-3-8b:free` : Worker B (Sous-agents rapides, micro-tâches, logs, inspections).
 
@@ -102,7 +103,7 @@ Réponds EXCLUSIVEMENT sous forme d'un objet JSON valide (aucun texte autour) :
   "action_input": { ...arguments... }
 }
 
-BOÎTE À OUTILS AMAL-DG (DELEGATION, RECHERCHE, GIT, COMPILATION) :
+BOÎTE À OUTILS AMAL-DG :
 1. `delegate_to_subagent` : Mandate un sous-agent. Args: {"team": "...", "task_description": "...", "save_to_file": "...", "model_profile": "analytique|juridique|technique|rapide", "project_id": "..."}
 2. `tavily_web_search` : Recherche d'informations fraîches sur le Web. Args: {"query": "..."}
 3. `firecrawl_scrape_url` : Extraction Markdown d'une URL Web. Args: {"url": "..."}
@@ -163,7 +164,6 @@ def git_commit_and_push(file_path: str, commit_message: str, content_to_write: U
         return f"ERREUR GITHUB: {str(e)}"
 
 def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "", model_profile: str = "analytique", project_id: str = "GLOBAL") -> str:
-    """Délégation dynamique d'Amal-DG à un sous-agent de la matrice avec bascule automatique LLM."""
     models_catalog = {
         "analytique": "google/gemma-4-31b-it:free",
         "juridique": "z-ai/glm-5.2:free",
@@ -281,41 +281,50 @@ TOOLS_MAP = {
 }
 
 # ==========================================
-# 2. MOTEUR SWARM LANGGRAPH
+# 2. MOTEUR SWARM LANGGRAPH (GROQ + FALLBACK)
 # ==========================================
 
 class AgentState(TypedDict):
     messages: Annotated[List, operator.add]
 
-llm_primary = ChatOpenAI(model="google/gemma-4-31b-it:free", temperature=0, openai_api_key=OPENROUTER_API_KEY, openai_api_base="https://openrouter.ai/api/v1")
+# Master Core Primary: Groq GPT-OSS-120b | Backup: OpenRouter GLM-5.2
+llm_primary = ChatGroq(model="openai/gpt-oss-120b", temperature=0, groq_api_key=GROQ_API_KEY) if GROQ_API_KEY else ChatOpenAI(model="z-ai/glm-5.2:free", temperature=0, openai_api_key=OPENROUTER_API_KEY, openai_api_base="https://openrouter.ai/api/v1")
 llm_fallback = ChatOpenAI(model="z-ai/glm-5.2:free", temperature=0, openai_api_key=OPENROUTER_API_KEY, openai_api_base="https://openrouter.ai/api/v1")
-llm = llm_primary.with_fallbacks([llm_fallback])
 
 def call_model(state: AgentState):
     system_ctx = SystemMessage(content=SYSTEM_PROMPT)
     full_messages = [system_ctx] + state["messages"][-10:]
     
-    try:
-        response = llm.invoke(full_messages)
-        content = response.content.strip()
-        
-        if content.startswith("{") and "action" in content:
-            try:
-                tool_data = json.loads(content)
-                action_name = tool_data.get("action")
-                action_input = tool_data.get("action_input", {})
-                
-                if action_name in TOOLS_MAP:
-                    tool_fn = TOOLS_MAP[action_name]
-                    tool_result = tool_fn(**action_input) if isinstance(action_input, dict) else tool_fn(action_input)
-                    tool_msg = HumanMessage(content=f"--- RÉSULTAT ACTION ({action_name}) ---\n{tool_result}\n\nPoursuis la gestion de la mission.")
-                    return {"messages": [AIMessage(content=content), tool_msg]}
-            except Exception:
-                pass
+    models_to_try = [llm_primary, llm_fallback]
+    
+    for current_llm in models_to_try:
+        try:
+            response = current_llm.invoke(full_messages)
+            content = response.content.strip()
+            
+            if content.startswith("{") and "action" in content:
+                try:
+                    tool_data = json.loads(content)
+                    action_name = tool_data.get("action")
+                    action_input = tool_data.get("action_input", {})
+                    
+                    if action_name in TOOLS_MAP:
+                        tool_fn = TOOLS_MAP[action_name]
+                        tool_result = tool_fn(**action_input) if isinstance(action_input, dict) else tool_fn(action_input)
+                        tool_msg = HumanMessage(content=f"--- RÉSULTAT ACTION ({action_name}) ---\n{tool_result}\n\nPoursuis la gestion de la mission.")
+                        return {"messages": [AIMessage(content=content), tool_msg]}
+                except Exception:
+                    pass
 
-        return {"messages": [response]}
-    except Exception as e:
-        return {"messages": [AIMessage(content=f"⚠️ Erreur Moteur Amal-DG : {str(e)}")]}
+            return {"messages": [response]}
+        except Exception as e:
+            error_str = str(e)
+            logging.warning(f"⚠️ Erreur LLM ({getattr(current_llm, 'model', 'default')}): {error_str}")
+            if "429" in error_str or "rate_limit" in error_str.lower():
+                continue
+            return {"messages": [AIMessage(content=f"⚠️ Erreur Moteur Amal-DG : {error_str}")]}
+
+    return {"messages": [AIMessage(content="⚠️ Rate limit généralisé. Réessaie dans quelques secondes.")]}
 
 def should_continue(state: AgentState):
     last_message = state["messages"][-1]
@@ -349,15 +358,15 @@ async def startup_event():
     asyncio.create_task(keep_alive_task())
 
 def process_slack_mission_async(channel_id: str, user_prompt: str):
-    record_log("ORCHESTRATOR", "STARTED", "google/gemma-4-31b-it:free", f"Slack Mission: {user_prompt[:50]}...")
+    record_log("ORCHESTRATOR", "STARTED", "openai/gpt-oss-120b", f"Slack Mission: {user_prompt[:50]}...")
     conversation_history = [HumanMessage(content=user_prompt)]
     try:
         final_state = app_graph.invoke({"messages": conversation_history})
         final_message = final_state["messages"][-1].content
-        record_log("ORCHESTRATOR", "COMPLETED", "google/gemma-4-31b-it:free", "Mission achevée")
+        record_log("ORCHESTRATOR", "COMPLETED", "openai/gpt-oss-120b", "Mission achevée")
     except Exception as e:
         final_message = f"⚠️ *Erreur Moteur Amal-DG* : {str(e)}"
-        record_log("ORCHESTRATOR", "FAILED", "google/gemma-4-31b-it:free", str(e))
+        record_log("ORCHESTRATOR", "FAILED", "openai/gpt-oss-120b", str(e))
 
     if SLACK_TOKEN:
         try:
@@ -393,7 +402,7 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
 def get_dashboard_data():
     return {
         "server_status": "ONLINE",
-        "version": "6.0.0",
+        "version": "6.1.0",
         "engine_role": "AUTONOMOUS-MULTI-TENANT-ORCHESTRATOR",
         "models_health": MODEL_HEALTH,
         "execution_history": EXECUTION_LOGS
@@ -402,6 +411,6 @@ def get_dashboard_data():
 @app.get("/health")
 def health_check():
     return {
-        "status": "AMAL-DG-FULL-AUTONOMY-V6.0.0-ONLINE",
+        "status": "AMAL-DG-GROQ-GPT120B-ACTIVE-V6.1.0",
         "models_health": MODEL_HEALTH
     }
