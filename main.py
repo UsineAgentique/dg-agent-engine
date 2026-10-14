@@ -34,7 +34,7 @@ except ImportError:
 # Configuration des logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="7.0.0")
+app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="7.0.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -101,7 +101,7 @@ TES POSTURES, COMPÉTENCES ET DIRECTIVES EXEC :
 
 3. RIGUEUR & STANDARDS PMP® (PROJECT MANAGEMENT PROFESSIONAL) :
    - Gestion des Risques : Identification active des blocages (techniques, juridiques, ressources) et plans de mitigation.
-   - Gestion du Périmètre (Scope Management) : Évite le "Scope Creep", cadre strictement les fonctionnalités.
+   - Gestion du Périmètre (Scope Management) : Évite le "Scope Creep", cadre strictly les fonctionnalités.
    - Qualité & Conformité (QA) : Tolérance zéro pour le code instable ou non documenté.
 
 4. GESTION DU PORTEFEUILLE MULTI-PROJETS :
@@ -337,14 +337,16 @@ def send_slack_message(channel: str, text: str):
         logging.error("Format de token Slack invalide.")
         return
 
+    url = "[https://slack.com/api/chat.postMessage](https://slack.com/api/chat.postMessage)"
+
     try:
-        resp = httpx.post(
-            "[https://slack.com/api/chat.postMessage](https://slack.com/api/chat.postMessage)",
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"},
-            json={"channel": channel, "text": text},
-            timeout=15.0
-        )
-        logging.info(f"Slack response status: {resp.status_code}")
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.post(
+                url,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"},
+                json={"channel": channel, "text": text}
+            )
+            logging.info(f"Slack response status: {resp.status_code}")
     except Exception as e:
         logging.error(f"Erreur envoi Slack: {e}")
 
@@ -378,7 +380,7 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
 def get_dashboard_data():
     return {
         "server_status": "ONLINE",
-        "version": "7.0.0",
+        "version": "7.0.1",
         "executive_standards": ["SILICON_VALLEY_CEO", "PMP_RIGOR", "AGILE_SCRUM"],
         "models_health": MODEL_HEALTH,
         "execution_history": EXECUTION_LOGS
@@ -386,4 +388,4 @@ def get_dashboard_data():
 
 @app.get("/health")
 def health_check():
-    return {"status": "ONLINE", "version": "7.0.0"}
+    return {"status": "ONLINE", "version": "7.0.1"}
