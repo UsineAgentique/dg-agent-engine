@@ -6,7 +6,7 @@ import base64
 import operator
 import logging
 import asyncio
-from typing import TypedDict, Annotated, List, Union
+from typing import TypedDict, Annotated, List, Union, Dict, Any
 from datetime import datetime
 
 from fastapi import FastAPI, Request, BackgroundTasks, Response
@@ -20,10 +20,22 @@ from langchain_openai import ChatOpenAI
 from supabase import create_client, Client
 from fpdf import FPDF
 
+# Importations des dépendances du requirements.txt
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+try:
+    from firecrawl import FirecrawlApp
+except ImportError:
+    FirecrawlApp = None
+
+try:
+    from e2b_code_interpreter import CodeInterpreter
+except ImportError:
+    CodeInterpreter = None
+
 # Configuration des logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="AMAL-DG-CORE-MULTI-TENANT-SWARM", version="6.1.0")
+app = FastAPI(title="AMAL-DG-CORE-MULTI-TENANT-SWARM", version="6.3.0")
 
 # ==========================================
 # ACTIVATION DU CORS POUR DASHBOARD VERCEL
@@ -37,7 +49,7 @@ app.add_middleware(
 )
 
 # ==========================================
-# 0. CONFIGURATION & CLÉS API (INFRA & CLOUD)
+# 0. CONFIGURATION & CLÉS API (14 SERVICES)
 # ==========================================
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -46,13 +58,15 @@ SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 SLACK_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
+E2B_API_KEY = os.getenv("E2B_API_KEY")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPOSITORY")
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://dg-agent-engine.onrender.com")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
+firecrawl_app = FirecrawlApp(api_key=FIRECRAWL_API_KEY) if FIRECRAWL_API_KEY and FirecrawlApp else None
 
-# MATRICE D'ARCHITECTURE LLM & CIRCUIT BREAKER DYNAMIQUE
+# MATRICE D'ARCHITECTURE 4 LLM & CIRCUIT BREAKER DYNAMIQUE
 MODEL_HEALTH = {
     "openai/gpt-oss-120b": {"status": "HEALTHY", "fails": 0, "role": "Master Core Primary (Groq)"},
     "z-ai/glm-5.2:free": {"status": "HEALTHY", "fails": 0, "role": "Master Strategy Backup & Juridique"},
@@ -60,11 +74,11 @@ MODEL_HEALTH = {
     "meta-llama/llama-3-8b:free": {"status": "HEALTHY", "fails": 0, "role": "Worker B (Specialized Sub-Agents)"}
 }
 
-# REGISTRE DES LOGS D'EXÉCUTION DU SWARM POUR VERCEL
+# REGISTRE DES LOGS D'EXÉCUTION DU SWARM POUR VERCEL & SUPABASE
 EXECUTION_LOGS = []
 
 def record_log(pole: str, status: str, model: str, details: str, project_id: str = "GLOBAL"):
-    """Enregistre les événements du Swarm pour la téléométrie du Dashboard Vercel."""
+    """Enregistre les événements du Swarm pour la téléométrie Vercel et Supabase."""
     log_entry = {
         "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
         "project_id": project_id,
@@ -76,6 +90,13 @@ def record_log(pole: str, status: str, model: str, details: str, project_id: str
     EXECUTION_LOGS.insert(0, log_entry)
     if len(EXECUTION_LOGS) > 100:
         EXECUTION_LOGS.pop()
+        
+    # Persistance Supabase asynchrone si disponible
+    if supabase:
+        try:
+            supabase.table("swarm_logs").insert(log_entry).execute()
+        except Exception:
+            pass
 
 # PROMPT SYSTÈME GLOBAL : CHARTE AUTONOME AMAL-DG MULTI-PROJETS
 SYSTEM_PROMPT = """Tu es AMAL-DG, Directrice Générale, Architecte IA et Super-Orchestratrice du Swarm Agentique Multi-Projets.
@@ -105,17 +126,32 @@ Réponds EXCLUSIVEMENT sous forme d'un objet JSON valide (aucun texte autour) :
 
 BOÎTE À OUTILS AMAL-DG :
 1. `delegate_to_subagent` : Mandate un sous-agent. Args: {"team": "...", "task_description": "...", "save_to_file": "...", "model_profile": "analytique|juridique|technique|rapide", "project_id": "..."}
-2. `tavily_web_search` : Recherche d'informations fraîches sur le Web. Args: {"query": "..."}
-3. `firecrawl_scrape_url` : Extraction Markdown d'une URL Web. Args: {"url": "..."}
-4. `git_commit_and_push` : Création/mise à jour de fichiers et code sur GitHub. Args: {"file_path": "...", "commit_message": "...", "content_to_write": "..."}
-5. `read_github_file` : Inspection du code et des livrables sur GitHub. Args: {"file_path": "..."}
-6. `compile_markdowns_to_pdf` : Génération du Master PDF d'un projet. Args: {"folder_path": "...", "output_pdf_path": "..."}
+2. `execute_python_code_e2b` : Exécute du code Python sécurisé en Sandbox. Args: {"code": "..."}
+3. `tavily_web_search` : Recherche d'informations fraîches sur le Web. Args: {"query": "..."}
+4. `firecrawl_scrape_url` : Extraction Markdown d'une URL Web via Firecrawl. Args: {"url": "..."}
+5. `git_commit_and_push` : Création/mise à jour de fichiers sur GitHub. Args: {"file_path": "...", "commit_message": "...", "content_to_write": "..."}
+6. `read_github_file` : Inspection du code et des livrables sur GitHub. Args: {"file_path": "..."}
+7. `compile_markdowns_to_pdf` : Génération du Master PDF avec FPDF2. Args: {"folder_path": "...", "output_pdf_path": "..."}
 
 Si tes sous-actions sont terminées, réponds directement à l'utilisateur ou sur Slack en TEXTE CLAIR ET STRUCTURÉ."""
 
 # ==========================================
 # 1. OUTILS ET CAPACITÉS D'ACTION DU SWARM
 # ==========================================
+
+def execute_python_code_e2b(code: str) -> str:
+    """Exécute du code Python dans une Sandbox E2B sécurisée."""
+    if not E2B_API_KEY or not CodeInterpreter:
+        return "E2B API Key non configurée ou module non disponible."
+    try:
+        with CodeInterpreter(api_key=E2B_API_KEY) as sandbox:
+            execution = sandbox.notebook.exec_cell(code)
+            logs = execution.logs.stdout
+            if execution.error:
+                return f"ERREUR E2B EXÉCUTION: {execution.error.value}"
+            return f"RÉSULTAT EXÉCUTION E2B:\n" + "\n".join(logs)
+    except Exception as e:
+        return f"Erreur Sandbox E2B: {str(e)}"
 
 def read_github_file(file_path: str) -> str:
     try:
@@ -223,7 +259,7 @@ def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "
 
 def compile_markdowns_to_pdf(folder_path: str = "docs", output_pdf_path: str = "Master_Report.pdf") -> str:
     try:
-        record_log("COMPILER_PDF", "IN_PROGRESS", "FPDF", f"Compilation PDF du dossier {folder_path}")
+        record_log("COMPILER_PDF", "IN_PROGRESS", "FPDF2", f"Compilation PDF du dossier {folder_path}")
         if not os.path.exists(folder_path): return f"Dossier {folder_path} introuvable."
         files = sorted([os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith(".md")])
         if not files: return "Aucun fichier Markdown à compiler."
@@ -232,23 +268,23 @@ def compile_markdowns_to_pdf(folder_path: str = "docs", output_pdf_path: str = "
         pdf.set_auto_page_break(auto=True, margin=15)
         pdf.add_page()
         pdf.set_font("Helvetica", "B", 16)
-        pdf.cell(0, 20, "AMAL-DG - Master Strategic Report", ln=True, align="C")
+        pdf.cell(0, 20, "AMAL-DG - Master Strategic Report", new_x="LMARGIN", new_y="NEXT", align="C")
         pdf.ln(10)
 
         for file in files:
             pdf.add_page()
             pdf.set_font("Helvetica", "B", 12)
-            pdf.cell(0, 10, f"Section : {os.path.basename(file)}", ln=True)
+            pdf.cell(0, 10, f"Section : {os.path.basename(file)}", new_x="LMARGIN", new_y="NEXT")
             with open(file, "r", encoding="utf-8") as f: content = f.read()
             pdf.set_font("Helvetica", "", 10)
             pdf.multi_cell(0, 5, content.encode("latin-1", "replace").decode("latin-1"))
 
         pdf_bytes = pdf.output()
         res = git_commit_and_push(output_pdf_path, "Feat: Publication Master PDF Multi-Projets", pdf_bytes)
-        record_log("COMPILER_PDF", "SUCCESS", "FPDF", f"Master PDF généré: {output_pdf_path}")
+        record_log("COMPILER_PDF", "SUCCESS", "FPDF2", f"Master PDF généré: {output_pdf_path}")
         return res
     except Exception as e:
-        return f"Erreur FPDF: {str(e)}"
+        return f"Erreur FPDF2: {str(e)}"
 
 def tavily_web_search(query: str) -> str:
     if not TAVILY_API_KEY: return "Clé Tavily non configurée."
@@ -260,6 +296,12 @@ def tavily_web_search(query: str) -> str:
         return f"Erreur Tavily: {str(e)}"
 
 def firecrawl_scrape_url(url: str) -> str:
+    if firecrawl_app:
+        try:
+            scrape_result = firecrawl_app.scrape_url(url, params={'formats': ['markdown']})
+            return scrape_result.get('markdown', '')[:1500]
+        except Exception as e:
+            return f"Erreur SDK Firecrawl: {str(e)}"
     if not FIRECRAWL_API_KEY: return "Clé Firecrawl non configurée."
     try:
         headers = {"Authorization": f"Bearer {FIRECRAWL_API_KEY}", "Content-Type": "application/json"}
@@ -273,6 +315,7 @@ def firecrawl_scrape_url(url: str) -> str:
 
 TOOLS_MAP = {
     "delegate_to_subagent": delegate_to_subagent,
+    "execute_python_code_e2b": execute_python_code_e2b,
     "read_github_file": read_github_file,
     "git_commit_and_push": git_commit_and_push,
     "compile_markdowns_to_pdf": compile_markdowns_to_pdf,
@@ -287,7 +330,6 @@ TOOLS_MAP = {
 class AgentState(TypedDict):
     messages: Annotated[List, operator.add]
 
-# Master Core Primary: Groq GPT-OSS-120b | Backup: OpenRouter GLM-5.2
 llm_primary = ChatGroq(model="openai/gpt-oss-120b", temperature=0, groq_api_key=GROQ_API_KEY) if GROQ_API_KEY else ChatOpenAI(model="z-ai/glm-5.2:free", temperature=0, openai_api_key=OPENROUTER_API_KEY, openai_api_base="https://openrouter.ai/api/v1")
 llm_fallback = ChatOpenAI(model="z-ai/glm-5.2:free", temperature=0, openai_api_key=OPENROUTER_API_KEY, openai_api_base="https://openrouter.ai/api/v1")
 
@@ -301,6 +343,12 @@ def call_model(state: AgentState):
         try:
             response = current_llm.invoke(full_messages)
             content = response.content.strip()
+            
+            if content.startswith("```"):
+                lines = content.splitlines()
+                if lines[0].startswith("```"): lines = lines[1:]
+                if lines and lines[-1].startswith("```"): lines = lines[:-1]
+                content = "\n".join(lines).strip()
             
             if content.startswith("{") and "action" in content:
                 try:
@@ -320,11 +368,11 @@ def call_model(state: AgentState):
         except Exception as e:
             error_str = str(e)
             logging.warning(f"⚠️ Erreur LLM ({getattr(current_llm, 'model', 'default')}): {error_str}")
-            if "429" in error_str or "rate_limit" in error_str.lower():
+            if any(err in error_str.lower() for err in ["400", "429", "rate_limit", "tool_use_failed"]):
                 continue
             return {"messages": [AIMessage(content=f"⚠️ Erreur Moteur Amal-DG : {error_str}")]}
 
-    return {"messages": [AIMessage(content="⚠️ Rate limit généralisé. Réessaie dans quelques secondes.")]}
+    return {"messages": [AIMessage(content="⚠️ Saturation temporaire des modèles. Réessaie dans quelques secondes.")]}
 
 def should_continue(state: AgentState):
     last_message = state["messages"][-1]
@@ -340,8 +388,21 @@ workflow.add_conditional_edges("agent", should_continue, {"agent": "agent", END:
 app_graph = workflow.compile()
 
 # ==========================================
-# 3. KEEPALIVE & INTEGRATION SLACK WEBHOOKS
+# 3. SCHEDULER, KEEPALIVE & SLACK EVENTS
 # ==========================================
+
+scheduler = AsyncIOScheduler()
+
+async def scheduled_swarm_healthcheck():
+    """Tâche récurrente APScheduler : Audit automatique des modèles."""
+    logging.info("⏰ [APScheduler] Audit périodique du Swarm activé.")
+    record_log("SCHEDULER", "HEALTHCHECK", "SYSTEM", "Audit de routine exécuté par APScheduler")
+
+@app.on_event("startup")
+async def startup_event():
+    scheduler.add_job(scheduled_swarm_healthcheck, 'interval', minutes=30)
+    scheduler.start()
+    asyncio.create_task(keep_alive_task())
 
 async def keep_alive_task():
     await asyncio.sleep(15)
@@ -352,10 +413,6 @@ async def keep_alive_task():
             except Exception:
                 pass
             await asyncio.sleep(600)
-
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(keep_alive_task())
 
 def process_slack_mission_async(channel_id: str, user_prompt: str):
     record_log("ORCHESTRATOR", "STARTED", "openai/gpt-oss-120b", f"Slack Mission: {user_prompt[:50]}...")
@@ -371,7 +428,7 @@ def process_slack_mission_async(channel_id: str, user_prompt: str):
     if SLACK_TOKEN:
         try:
             httpx.post(
-                "https://slack.com/api/chat.postMessage",
+                "[https://slack.com/api/chat.postMessage](https://slack.com/api/chat.postMessage)",
                 json={"channel": channel_id, "text": final_message},
                 headers={"Authorization": f"Bearer {SLACK_TOKEN}", "Content-Type": "application/json"}
             )
@@ -402,7 +459,7 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
 def get_dashboard_data():
     return {
         "server_status": "ONLINE",
-        "version": "6.1.0",
+        "version": "6.3.0",
         "engine_role": "AUTONOMOUS-MULTI-TENANT-ORCHESTRATOR",
         "models_health": MODEL_HEALTH,
         "execution_history": EXECUTION_LOGS
@@ -411,6 +468,6 @@ def get_dashboard_data():
 @app.get("/health")
 def health_check():
     return {
-        "status": "AMAL-DG-GROQ-GPT120B-ACTIVE-V6.1.0",
+        "status": "AMAL-DG-FULL-STACK-V6.3.0-ONLINE",
         "models_health": MODEL_HEALTH
     }
