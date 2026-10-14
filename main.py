@@ -35,7 +35,7 @@ except ImportError:
 # Configuration des logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="AMAL-DG-CORE-MULTI-TENANT-SWARM", version="6.4.0")
+app = FastAPI(title="AMAL-DG-CORE-MULTI-TENANT-SWARM", version="6.5.0")
 
 # ==========================================
 # ACTIVATION DU CORS POUR DASHBOARD VERCEL
@@ -66,10 +66,10 @@ RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://dg-agent-engine.
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 firecrawl_app = FirecrawlApp(api_key=FIRECRAWL_API_KEY) if FIRECRAWL_API_KEY and FirecrawlApp else None
 
-# MATRICE D'ARCHITECTURE 4 LLM & CIRCUIT BREAKER DYNAMIQUE
+# MATRICE D'ARCHITECTURE 4 LLM & CIRCUIT BREAKER DYNAMIQUE (SLUGS CORRIGÉS)
 MODEL_HEALTH = {
     "openai/gpt-oss-120b": {"status": "HEALTHY", "fails": 0, "role": "Master Core Primary (Groq)"},
-    "z-ai/glm-5.2:free": {"status": "HEALTHY", "fails": 0, "role": "Master Strategy Backup & Juridique"},
+    "z-ai/glm-5.2": {"status": "HEALTHY", "fails": 0, "role": "Master Strategy Backup & Juridique"},
     "google/gemma-4-26b:free": {"status": "HEALTHY", "fails": 0, "role": "Worker A (Execution & Code)"},
     "meta-llama/llama-3-8b:free": {"status": "HEALTHY", "fails": 0, "role": "Worker B (Specialized Sub-Agents)"}
 }
@@ -78,7 +78,7 @@ MODEL_HEALTH = {
 EXECUTION_LOGS = []
 
 def record_log(pole: str, status: str, model: str, details: str, project_id: str = "GLOBAL"):
-    """Enregistre les événements du Swarm pour la téléométrie Vercel."""
+    """Enregistre les événements du Swarm pour la télémétrie Vercel."""
     log_entry = {
         "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
         "project_id": project_id,
@@ -106,7 +106,7 @@ TES POUVOIRS & RESPONSABILITÉS D'INFRASTRUCTURE ET DE GESTION :
 
 3. ROUTAGE ET PILOTAGE DES MODÈLES LLM :
    - `openai/gpt-oss-120b` (Groq) : Master Primary (Orchestration centrale haute vitesse).
-   - `z-ai/glm-5.2:free` : Strategy Backup & Juridique/Rigueur (Conformité, rapports complexes, failover).
+   - `z-ai/glm-5.2` : Strategy Backup & Juridique/Rigueur (Conformité, rapports complexes, failover).
    - `google/gemma-4-26b:free` : Worker A (Code, architecture technique, scripts backend/frontend).
    - `meta-llama/llama-3-8b:free` : Worker B (Sous-agents rapides, micro-tâches, logs, inspections).
 
@@ -195,13 +195,13 @@ def git_commit_and_push(file_path: str, commit_message: str, content_to_write: U
 def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "", model_profile: str = "analytique", project_id: str = "GLOBAL") -> str:
     models_catalog = {
         "analytique": "google/gemma-4-31b-it:free",
-        "juridique": "z-ai/glm-5.2:free",
+        "juridique": "z-ai/glm-5.2",
         "technique": "google/gemma-4-26b:free",
         "rapide": "meta-llama/llama-3-8b:free"
     }
     
     active_model = models_catalog.get(model_profile, "google/gemma-4-26b:free")
-    fallback_model = "z-ai/glm-5.2:free"
+    fallback_model = "z-ai/glm-5.2"
     
     if MODEL_HEALTH.get(active_model, {}).get("status") == "UNHEALTHY":
         active_model = fallback_model
@@ -223,8 +223,9 @@ def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "
             response = sub_client.invoke([system_msg, user_msg])
             result_text = response.content
             
-            MODEL_HEALTH[active_model]["fails"] = 0
-            MODEL_HEALTH[active_model]["status"] = "HEALTHY"
+            if active_model in MODEL_HEALTH:
+                MODEL_HEALTH[active_model]["fails"] = 0
+                MODEL_HEALTH[active_model]["status"] = "HEALTHY"
             
             if save_to_file:
                 git_commit_and_push(save_to_file, f"Feat({team}/{project_id}): Livrable via {active_model}", result_text)
@@ -238,9 +239,10 @@ def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "
             error_str = str(e)
             record_log(team, "WARNING", active_model, f"Erreur interceptée: {error_str}", project_id)
             if "429" in error_str or "rate_limit" in error_str.lower():
-                MODEL_HEALTH[active_model]["fails"] += 1
-                if MODEL_HEALTH[active_model]["fails"] >= 2:
-                    MODEL_HEALTH[active_model]["status"] = "UNHEALTHY"
+                if active_model in MODEL_HEALTH:
+                    MODEL_HEALTH[active_model]["fails"] += 1
+                    if MODEL_HEALTH[active_model]["fails"] >= 2:
+                        MODEL_HEALTH[active_model]["status"] = "UNHEALTHY"
                 active_model = fallback_model
                 time.sleep(2)
                 continue
@@ -323,8 +325,8 @@ TOOLS_MAP = {
 class AgentState(TypedDict):
     messages: Annotated[List, operator.add]
 
-llm_primary = ChatGroq(model="openai/gpt-oss-120b", temperature=0, groq_api_key=GROQ_API_KEY) if GROQ_API_KEY else ChatOpenAI(model="z-ai/glm-5.2:free", temperature=0, openai_api_key=OPENROUTER_API_KEY, openai_api_base="https://openrouter.ai/api/v1")
-llm_fallback = ChatOpenAI(model="z-ai/glm-5.2:free", temperature=0, openai_api_key=OPENROUTER_API_KEY, openai_api_base="https://openrouter.ai/api/v1")
+llm_primary = ChatGroq(model="openai/gpt-oss-120b", temperature=0, groq_api_key=GROQ_API_KEY) if GROQ_API_KEY else ChatOpenAI(model="z-ai/glm-5.2", temperature=0, openai_api_key=OPENROUTER_API_KEY, openai_api_base="https://openrouter.ai/api/v1")
+llm_fallback = ChatOpenAI(model="z-ai/glm-5.2", temperature=0, openai_api_key=OPENROUTER_API_KEY, openai_api_base="https://openrouter.ai/api/v1")
 
 def call_model(state: AgentState):
     system_ctx = SystemMessage(content=SYSTEM_PROMPT)
@@ -361,7 +363,7 @@ def call_model(state: AgentState):
         except Exception as e:
             error_str = str(e)
             logging.warning(f"⚠️ Erreur LLM ({getattr(current_llm, 'model', 'default')}): {error_str}")
-            if any(err in error_str.lower() for err in ["400", "429", "rate_limit", "tool_use_failed"]):
+            if any(err in error_str.lower() for err in ["400", "404", "429", "rate_limit", "tool_use_failed"]):
                 continue
             return {"messages": [AIMessage(content=f"⚠️ Erreur Moteur Amal-DG : {error_str}")]}
 
@@ -420,18 +422,18 @@ def process_slack_mission_async(channel_id: str, user_prompt: str):
 
     if SLACK_TOKEN:
         try:
-            slack_url = "[https://slack.com/api/chat.postMessage](https://slack.com/api/chat.postMessage)"
+            target_url = "[https://slack.com/api/chat.postMessage](https://slack.com/api/chat.postMessage)"
             headers = {
-                "Authorization": f"Bearer {SLACK_TOKEN.strip()}",
+                "Authorization": f"Bearer {str(SLACK_TOKEN).strip()}",
                 "Content-Type": "application/json; charset=utf-8"
             }
             payload = {
-                "channel": channel_id,
+                "channel": str(channel_id).strip(),
                 "text": str(final_message)
             }
             with httpx.Client(timeout=15.0) as client:
-                res = client.post(slack_url, json=payload, headers=headers)
-                logging.info(f"Slack postMessage Response: {res.status_code}")
+                res = client.post(target_url, json=payload, headers=headers)
+                logging.info(f"Slack postMessage Response Status: {res.status_code}")
         except Exception as err:
             logging.error(f"Erreur Slack postMessage : {err}")
 
@@ -459,7 +461,7 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
 def get_dashboard_data():
     return {
         "server_status": "ONLINE",
-        "version": "6.4.0",
+        "version": "6.5.0",
         "engine_role": "AUTONOMOUS-MULTI-TENANT-ORCHESTRATOR",
         "models_health": MODEL_HEALTH,
         "execution_history": EXECUTION_LOGS
@@ -468,6 +470,6 @@ def get_dashboard_data():
 @app.get("/health")
 def health_check():
     return {
-        "status": "AMAL-DG-PRODUCTION-STABLE-V6.4.0",
+        "status": "AMAL-DG-PRODUCTION-STABLE-V6.5.0",
         "models_health": MODEL_HEALTH
     }
