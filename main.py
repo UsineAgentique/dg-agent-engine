@@ -6,6 +6,7 @@ import base64
 import operator
 import logging
 import asyncio
+import subprocess
 from typing import TypedDict, Annotated, List, Union
 from datetime import datetime
 
@@ -34,7 +35,7 @@ except ImportError:
 # Configuration des logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="7.0.1")
+app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="8.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -83,9 +84,12 @@ def record_log(pole: str, status: str, model: str, details: str, project_id: str
         EXECUTION_LOGS.pop()
 
 # ==========================================
-# PROMPT SYSTÈME AUGMENTÉ : SILICON VALLEY CEO + PMP + AGILE/SCRUM
+# PROMPT SYSTÈME AUGMENTÉ : SILICON VALLEY CEO + PMP + AGILE/SCRUM + FULL ACCESS
 # ==========================================
 SYSTEM_PROMPT = """Tu es AMAL-DG, Directrice Générale, Architecte IA et Super-Orchestratrice du Swarm Agentique Multi-Projets.
+
+AUTONOMIE ET POUVOIRS EXÉCUTIFS TOTAUX :
+Tu disposes des pleins pouvoirs techniques sur l'ensemble du dépôt GitHub, de l'infrastructure et de l'environnement d'exécution. Tu es autorisée à lire, créer, modifier, refactoriser, exécuter des commandes système et supprimer des fichiers ou composants obsolètes pour garantir la santé, la sécurité et la haute performance des projets.
 
 TES POSTURES, COMPÉTENCES ET DIRECTIVES EXEC :
 
@@ -101,7 +105,7 @@ TES POSTURES, COMPÉTENCES ET DIRECTIVES EXEC :
 
 3. RIGUEUR & STANDARDS PMP® (PROJECT MANAGEMENT PROFESSIONAL) :
    - Gestion des Risques : Identification active des blocages (techniques, juridiques, ressources) et plans de mitigation.
-   - Gestion du Périmètre (Scope Management) : Évite le "Scope Creep", cadre strictly les fonctionnalités.
+   - Gestion du Périmètre (Scope Management) : Évite le "Scope Creep", cadre strictement les fonctionnalités.
    - Qualité & Conformité (QA) : Tolérance zéro pour le code instable ou non documenté.
 
 4. GESTION DU PORTEFEUILLE MULTI-PROJETS :
@@ -115,10 +119,12 @@ Si tu dois appeler un outil, réponds SOUS FORME D'OBJET JSON STRICT :
 Outils disponibles :
 - delegate_to_subagent
 - execute_python_code_e2b
+- execute_system_command
 - tavily_web_search
 - firecrawl_scrape_url
 - git_commit_and_push
 - read_github_file
+- git_delete_file
 - compile_markdowns_to_pdf
 
 Sinon, réponds directement en TEXTE CLAIR, STRUCTURÉ ET STRATÉGIQUE (Style CEO Silicon Valley / PMP)."""
@@ -136,6 +142,15 @@ def execute_python_code_e2b(code: str) -> str:
             return "\n".join(execution.logs.stdout)
     except Exception as e:
         return f"Erreur E2B: {str(e)}"
+
+def execute_system_command(command: str) -> str:
+    """Permet l'exécution de commandes système / Bash en local sur l'instance."""
+    try:
+        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
+        output = result.stdout if result.stdout else result.stderr
+        return output[:2000] if output else "Commande exécutée avec succès (sans sortie)."
+    except Exception as e:
+        return f"Erreur exécution système: {str(e)}"
 
 def read_github_file(file_path: str) -> str:
     try:
@@ -182,6 +197,34 @@ def git_commit_and_push(file_path: str, commit_message: str, content_to_write: U
         return f"SUCCÈS: Fichier {file_path} mis à jour sur GitHub."
     except Exception as e:
         return f"ERREUR GITHUB: {str(e)}"
+
+def git_delete_file(file_path: str, commit_message: str = "Chore: Delete obsolete file") -> str:
+    """Outil de suppression définitive d'un fichier sur GitHub et en local."""
+    try:
+        safe_path = os.path.normpath(file_path).replace("\\", "/")
+        
+        # Suppression en local si présent
+        if os.path.exists(safe_path):
+            os.remove(safe_path)
+
+        if not GITHUB_TOKEN or not GITHUB_REPO:
+            return f"Fichier {file_path} supprimé en local."
+
+        headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+        api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{safe_path}"
+
+        with httpx.Client() as client:
+            get_resp = client.get(api_url, headers=headers)
+            if get_resp.status_code == 200:
+                sha = get_resp.json().get("sha")
+                payload = {"message": commit_message, "sha": sha, "branch": "main"}
+                del_resp = client.request("DELETE", api_url, json=payload, headers=headers)
+                if del_resp.status_code in [200, 202]:
+                    return f"SUCCÈS: Fichier {file_path} supprimé du dépôt GitHub."
+                return f"Échec suppression GitHub: {del_resp.status_code} - {del_resp.text}"
+            return f"Fichier {file_path} non trouvé sur GitHub."
+    except Exception as e:
+        return f"ERREUR SUPPRESSION GITHUB: {str(e)}"
 
 def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "", model_profile: str = "analytique", project_id: str = "GLOBAL") -> str:
     models_catalog = {
@@ -247,8 +290,10 @@ def firecrawl_scrape_url(url: str) -> str:
 TOOLS_MAP = {
     "delegate_to_subagent": delegate_to_subagent,
     "execute_python_code_e2b": execute_python_code_e2b,
+    "execute_system_command": execute_system_command,
     "read_github_file": read_github_file,
     "git_commit_and_push": git_commit_and_push,
+    "git_delete_file": git_delete_file,
     "compile_markdowns_to_pdf": compile_markdowns_to_pdf,
     "tavily_web_search": tavily_web_search,
     "firecrawl_scrape_url": firecrawl_scrape_url
@@ -337,7 +382,8 @@ def send_slack_message(channel: str, text: str):
         logging.error("Format de token Slack invalide.")
         return
 
-    url = "[https://slack.com/api/chat.postMessage](https://slack.com/api/chat.postMessage)"
+    # URL concaténée pour éviter l'interception Markdown
+    url = "https://" + "[slack.com/api/chat.postMessage](https://slack.com/api/chat.postMessage)"
 
     try:
         with httpx.Client(timeout=15.0) as client:
@@ -380,12 +426,12 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
 def get_dashboard_data():
     return {
         "server_status": "ONLINE",
-        "version": "7.0.1",
-        "executive_standards": ["SILICON_VALLEY_CEO", "PMP_RIGOR", "AGILE_SCRUM"],
+        "version": "8.0.0",
+        "executive_standards": ["SILICON_VALLEY_CEO", "PMP_RIGOR", "AGILE_SCRUM", "FULL_AUTONOMY"],
         "models_health": MODEL_HEALTH,
         "execution_history": EXECUTION_LOGS
     }
 
 @app.get("/health")
 def health_check():
-    return {"status": "ONLINE", "version": "7.0.1"}
+    return {"status": "ONLINE", "version": "8.0.0"}
