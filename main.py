@@ -35,7 +35,7 @@ except ImportError:
 # Configuration des logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="8.0.0")
+app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="8.0.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -105,7 +105,7 @@ TES POSTURES, COMPÉTENCES ET DIRECTIVES EXEC :
 
 3. RIGUEUR & STANDARDS PMP® (PROJECT MANAGEMENT PROFESSIONAL) :
    - Gestion des Risques : Identification active des blocages (techniques, juridiques, ressources) et plans de mitigation.
-   - Gestion du Périmètre (Scope Management) : Évite le "Scope Creep", cadre strictement les fonctionnalités.
+   - Gestion du Périmètre (Scope Management) : Évite le "Scope Creep", cadre strictly les fonctionnalités.
    - Qualité & Conformité (QA) : Tolérance zéro pour le code instable ou non documenté.
 
 4. GESTION DU PORTEFEUILLE MULTI-PROJETS :
@@ -382,8 +382,8 @@ def send_slack_message(channel: str, text: str):
         logging.error("Format de token Slack invalide.")
         return
 
-    # URL concaténée pour éviter l'interception Markdown
-    url = "https://" + "[slack.com/api/chat.postMessage](https://slack.com/api/chat.postMessage)"
+    # URL brute sans aucune mise en forme
+    url = "[https://slack.com/api/chat.postMessage](https://slack.com/api/chat.postMessage)"
 
     try:
         with httpx.Client(timeout=15.0) as client:
@@ -426,7 +426,7 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
 def get_dashboard_data():
     return {
         "server_status": "ONLINE",
-        "version": "8.0.0",
+        "version": "8.0.1",
         "executive_standards": ["SILICON_VALLEY_CEO", "PMP_RIGOR", "AGILE_SCRUM", "FULL_AUTONOMY"],
         "models_health": MODEL_HEALTH,
         "execution_history": EXECUTION_LOGS
@@ -434,4 +434,4 @@ def get_dashboard_data():
 
 @app.get("/health")
 def health_check():
-    return {"status": "ONLINE", "version": "8.0.0"}
+    return {"status": "ONLINE", "version": "8.0.1"}
