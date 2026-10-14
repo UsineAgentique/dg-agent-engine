@@ -6,7 +6,7 @@ import base64
 import operator
 import logging
 import asyncio
-from typing import TypedDict, Annotated, List, Union
+from typing import TypedDict, Annotated, List, Union, Dict, Any
 from datetime import datetime
 
 from fastapi import FastAPI, Request, BackgroundTasks, Response
@@ -15,7 +15,6 @@ import httpx
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langgraph.graph import StateGraph, END
-from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
 from supabase import create_client, Client
 from fpdf import FPDF
@@ -23,7 +22,7 @@ from fpdf import FPDF
 # Configuration des logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="DG-AGENT-CORE-SAAS", version="5.0.0")
+app = FastAPI(title="AMAL-DG-CORE-MULTI-TENANT-SWARM", version="6.0.0")
 
 # ==========================================
 # ACTIVATION DU CORS POUR DASHBOARD VERCEL
@@ -37,7 +36,7 @@ app.add_middleware(
 )
 
 # ==========================================
-# 0. CONFIGURATION & CLÉS API
+# 0. CONFIGURATION & CLÉS API (INFRA & CLOUD)
 # ==========================================
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -52,7 +51,7 @@ RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://dg-agent-engine.
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
-# SUIVI DYNAMIQUE DES 4 MODÈLES DE L'ARCHITECTURE (CIRCUIT BREAKER)
+# MATRICE D'ARCHITECTURE 4 LLM & CIRCUIT BREAKER DYNAMIQUE
 MODEL_HEALTH = {
     "google/gemma-4-31b-it:free": {"status": "HEALTHY", "fails": 0, "role": "Master Core Primary"},
     "z-ai/glm-5.2:free": {"status": "HEALTHY", "fails": 0, "role": "Master Strategy Backup"},
@@ -60,33 +59,41 @@ MODEL_HEALTH = {
     "meta-llama/llama-3-8b:free": {"status": "HEALTHY", "fails": 0, "role": "Worker B (Specialized Sub-Agents)"}
 }
 
-# REGISTRE DES DÉCISIONS ET DES LOGS D'EXÉCUTION POUR LE DASHBOARD
+# REGISTRE DES LOGS D'EXÉCUTION DU SWARM POUR VERCEL
 EXECUTION_LOGS = []
 
-def record_log(pole: str, status: str, model: str, details: str):
-    """Enregistre un événement dans l'historique pour le dashboard Vercel."""
+def record_log(pole: str, status: str, model: str, details: str, project_id: str = "GLOBAL"):
+    """Enregistre les événements du Swarm pour la téléométrie du Dashboard Vercel."""
     log_entry = {
         "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "project_id": project_id,
         "pole": pole,
         "status": status,
         "model": model,
         "details": details
     }
     EXECUTION_LOGS.insert(0, log_entry)
-    if len(EXECUTION_LOGS) > 50:
+    if len(EXECUTION_LOGS) > 100:
         EXECUTION_LOGS.pop()
 
-# PROMPT SYSTÈME : AMAL-DG PILOTE LES 4 MODÈLES À TRAVERS LES 8 PÔLES
-SYSTEM_PROMPT = """Tu es Amal-DG, Directrice Générale, Architecte IA et Super-Orchestratrice du Swarm Agentique.
+# PROMPT SYSTÈME GLOBAL : CHARTE AUTONOME AMAL-DG MULTI-PROJETS
+SYSTEM_PROMPT = """Tu es AMAL-DG, Directrice Générale, Architecte IA et Super-Orchestratrice du Swarm Agentique Multi-Projets.
 
-ARCHITECTURE DES 4 MODÈLES LLM DISPONIBLES :
-1. `google/gemma-4-31b-it:free` : Master Core Primary (Orchestration centrale & Vision).
-2. `z-ai/glm-5.2:free` : Master Strategy Backup & Juridique (Failover & Rigueur analytique).
-3. `google/gemma-4-26b:free` : Worker A - Exécution, Code & Backend.
-4. `meta-llama/llama-3-8b:free` : Worker B - Sous-agents spécialisés rapides & Tâches légères.
+TES POUVOIRS & RESPONSABILITÉS D'INFRASTRUCTURE ET DE GESTION :
+1. GESTION DU PORTEFEUILLE MULTI-PROJETS :
+   - Tu peux piloter plusieurs projets SaaS (ex: BailConforme.ca, Usine Agentique, Control Center, etc.).
+   - Tu isoles le contexte de chaque projet lors des requêtes, commits et rapports.
 
-RÔLE ET ROUTAGE DES 8 PÔLES :
-Pour chaque délégation (`delegate_to_subagent`), choisis le profil de modèle adéquat (`analytique`, `juridique`, `technique`, ou `rapide`).
+2. GESTION DES 8 PÔLES & SOUS-AGENTS :
+   - Pôle 01: Produit & Stratégie | Pôle 02: Architecture System | Pôle 03: Backend & API Engine | Pôle 04: Frontend & UI
+   - Pôle 05: Sécurité & Privacy | Pôle 06: QA & Tests Automatisés | Pôle 07: DevOps & Pipelines | Pôle 08: Master Orchestration
+   - Tu définis, crées et assignes dynamiquement des sous-agents selon la complexité du projet et la charge.
+
+3. ROUTAGE ET PILOTAGE DES 4 MODÈLES LLM :
+   - `google/gemma-4-31b-it:free` : Master Primary (Vision globale, orchestration haute niveau).
+   - `z-ai/glm-5.2:free` : Strategy Backup & Juridique/Rigueur (Rapports complexes, conformité, failover).
+   - `google/gemma-4-26b:free` : Worker A (Code, architecture technique, scripts backend/frontend).
+   - `meta-llama/llama-3-8b:free` : Worker B (Sous-agents rapides, micro-tâches, logs, inspections).
 
 FORMAT DE RÉPONSE POUR EXÉCUTER UNE ACTION :
 Réponds EXCLUSIVEMENT sous forme d'un objet JSON valide (aucun texte autour) :
@@ -95,16 +102,18 @@ Réponds EXCLUSIVEMENT sous forme d'un objet JSON valide (aucun texte autour) :
   "action_input": { ...arguments... }
 }
 
-OUTILS DISPONIBLES :
-1. `delegate_to_subagent` : Mandate un sous-agent en précisant le profil LLM. Args: {"team": "...", "task_description": "...", "save_to_file": "...", "model_profile": "analytique | juridique | technique | rapide"}
-2. `tavily_web_search` : Recherche web en temps réel. Args: {"query": "..."}
-3. `firecrawl_scrape_url` : Scrape une page web. Args: {"url": "..."}
-4. `git_commit_and_push` : Publie un livrable sur GitHub. Args: {"file_path": "...", "commit_message": "...", "content_to_write": "..."}
-5. `read_github_file` : Lit un fichier sur GitHub. Args: {"file_path": "..."}
-6. `compile_markdowns_to_pdf` : Compile les rapports en PDF Master. Args: {"folder_path": "docs", "output_pdf_path": "Master.pdf"}"""
+BOÎTE À OUTILS AMAL-DG (DELEGATION, RECHERCHE, GIT, COMPILATION) :
+1. `delegate_to_subagent` : Mandate un sous-agent. Args: {"team": "...", "task_description": "...", "save_to_file": "...", "model_profile": "analytique|juridique|technique|rapide", "project_id": "..."}
+2. `tavily_web_search` : Recherche d'informations fraîches sur le Web. Args: {"query": "..."}
+3. `firecrawl_scrape_url` : Extraction Markdown d'une URL Web. Args: {"url": "..."}
+4. `git_commit_and_push` : Création/mise à jour de fichiers et code sur GitHub. Args: {"file_path": "...", "commit_message": "...", "content_to_write": "..."}
+5. `read_github_file` : Inspection du code et des livrables sur GitHub. Args: {"file_path": "..."}
+6. `compile_markdowns_to_pdf` : Génération du Master PDF d'un projet. Args: {"folder_path": "...", "output_pdf_path": "..."}
+
+Si tes sous-actions sont terminées, réponds directement à l'utilisateur ou sur Slack en TEXTE CLAIR ET STRUCTURÉ."""
 
 # ==========================================
-# 1. DÉFINITION DES OUTILS DE L'AGENT
+# 1. OUTILS ET CAPACITÉS D'ACTION DU SWARM
 # ==========================================
 
 def read_github_file(file_path: str) -> str:
@@ -112,7 +121,7 @@ def read_github_file(file_path: str) -> str:
         if not GITHUB_TOKEN or not GITHUB_REPO:
             if os.path.exists(file_path):
                 with open(file_path, "r", encoding="utf-8") as f: return f.read()
-            return f"Fichier '{file_path}' introuvable."
+            return f"Fichier '{file_path}' introuvable en local."
 
         headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
         api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{file_path}"
@@ -120,7 +129,7 @@ def read_github_file(file_path: str) -> str:
             resp = client.get(api_url, headers=headers)
             if resp.status_code == 200:
                 return base64.b64decode(resp.json().get("content", "")).decode("utf-8")
-            return f"Fichier non trouvé (code {resp.status_code})."
+            return f"Fichier non trouvé sur GitHub (code {resp.status_code})."
     except Exception as e:
         return f"Erreur lecture GitHub: {str(e)}"
 
@@ -137,7 +146,7 @@ def git_commit_and_push(file_path: str, commit_message: str, content_to_write: U
             content_b64 = base64.b64encode(content_to_write.encode("utf-8")).decode("utf-8")
 
         if not GITHUB_TOKEN or not GITHUB_REPO:
-            return f"Fichier {file_path} créé en local."
+            return f"Fichier {file_path} sauvegardé en local."
 
         headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
         api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{safe_path}"
@@ -149,12 +158,12 @@ def git_commit_and_push(file_path: str, commit_message: str, content_to_write: U
                 payload["sha"] = get_resp.json().get("sha")
             client.put(api_url, json=payload, headers=headers)
 
-        return f"SUCCÈS: Fichier {file_path} publié sur GitHub."
+        return f"SUCCÈS: Fichier {file_path} déployé sur GitHub."
     except Exception as e:
         return f"ERREUR GITHUB: {str(e)}"
 
-def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "", model_profile: str = "analytique") -> str:
-    """Délègue la tâche au sous-agent en utilisant le modèle adéquat parmi les 4 configurés."""
+def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "", model_profile: str = "analytique", project_id: str = "GLOBAL") -> str:
+    """Délégation dynamique d'Amal-DG à un sous-agent de la matrice avec bascule automatique LLM."""
     models_catalog = {
         "analytique": "google/gemma-4-31b-it:free",
         "juridique": "z-ai/glm-5.2:free",
@@ -170,7 +179,7 @@ def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "
 
     for attempt in range(2):
         try:
-            record_log(team, "IN_PROGRESS", active_model, f"Exécution via profil {model_profile}")
+            record_log(team, "IN_PROGRESS", active_model, f"Exécution mission [{project_id}] via {model_profile}", project_id)
             
             sub_client = ChatOpenAI(
                 model=active_model,
@@ -179,7 +188,7 @@ def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "
                 openai_api_base="https://openrouter.ai/api/v1"
             )
             
-            system_msg = SystemMessage(content=f"Tu es l'expert du pôle '{team}' (Modèle actif : {active_model}). Rédige une réponse technique et structurée.")
+            system_msg = SystemMessage(content=f"Tu es le sous-agent du pôle '{team}' pour le projet '{project_id}' (LLM: {active_model}). Sois précis, technique et structuré.")
             user_msg = HumanMessage(content=task_description)
             
             response = sub_client.invoke([system_msg, user_msg])
@@ -189,16 +198,16 @@ def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "
             MODEL_HEALTH[active_model]["status"] = "HEALTHY"
             
             if save_to_file:
-                git_commit_and_push(save_to_file, f"Feat({team}): Livrable via {active_model}", result_text)
-                record_log(team, "SUCCESS", active_model, f"Sauvegardé dans {save_to_file}")
-                return f"SUCCÈS: Rapport du pôle {team} sauvegardé dans '{save_to_file}'."
+                git_commit_and_push(save_to_file, f"Feat({team}/{project_id}): Livrable via {active_model}", result_text)
+                record_log(team, "SUCCESS", active_model, f"Sauvegardé dans {save_to_file}", project_id)
+                return f"SUCCÈS: Livrable du pôle {team} ({project_id}) enregistré dans '{save_to_file}'."
                 
-            record_log(team, "SUCCESS", active_model, "Exécution terminée")
+            record_log(team, "SUCCESS", active_model, "Exécution terminée", project_id)
             return result_text[:2000]
             
         except Exception as e:
             error_str = str(e)
-            record_log(team, "WARNING", active_model, f"Erreur: {error_str}")
+            record_log(team, "WARNING", active_model, f"Erreur interceptée: {error_str}", project_id)
             if "429" in error_str or "rate_limit" in error_str.lower():
                 MODEL_HEALTH[active_model]["fails"] += 1
                 if MODEL_HEALTH[active_model]["fails"] >= 2:
@@ -207,40 +216,39 @@ def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "
                 time.sleep(2)
                 continue
             else:
-                record_log(team, "FAILED", active_model, error_str)
+                record_log(team, "FAILED", active_model, error_str, project_id)
                 return f"ERREUR {team}: {error_str}"
                 
-    return f"ERREUR CRITIQUE {team}: Échec après plusieurs tentatives."
+    return f"ERREUR CRITIQUE {team}: Échec d'exécution après tentatives de failover."
 
 def compile_markdowns_to_pdf(folder_path: str = "docs", output_pdf_path: str = "Master_Report.pdf") -> str:
     try:
-        record_log("COMPILER_PDF", "IN_PROGRESS", "FPDF", f"Compilation de {folder_path}")
+        record_log("COMPILER_PDF", "IN_PROGRESS", "FPDF", f"Compilation PDF du dossier {folder_path}")
         if not os.path.exists(folder_path): return f"Dossier {folder_path} introuvable."
         files = sorted([os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith(".md")])
-        if not files: return "Aucun fichier Markdown trouvé."
+        if not files: return "Aucun fichier Markdown à compiler."
 
         pdf = FPDF()
         pdf.set_auto_page_break(auto=True, margin=15)
         pdf.add_page()
         pdf.set_font("Helvetica", "B", 16)
-        pdf.cell(0, 20, "Swarm Agentique - Rapport Master", ln=True, align="C")
+        pdf.cell(0, 20, "AMAL-DG - Master Strategic Report", ln=True, align="C")
         pdf.ln(10)
 
         for file in files:
             pdf.add_page()
             pdf.set_font("Helvetica", "B", 12)
-            pdf.cell(0, 10, f"Source : {os.path.basename(file)}", ln=True)
-            with open(file, "r", encoding="utf-8") as f:
-                content = f.read()
+            pdf.cell(0, 10, f"Section : {os.path.basename(file)}", ln=True)
+            with open(file, "r", encoding="utf-8") as f: content = f.read()
             pdf.set_font("Helvetica", "", 10)
             pdf.multi_cell(0, 5, content.encode("latin-1", "replace").decode("latin-1"))
 
         pdf_bytes = pdf.output()
-        res = git_commit_and_push(output_pdf_path, "Feat: Publication Master PDF", pdf_bytes)
-        record_log("COMPILER_PDF", "SUCCESS", "FPDF", f"PDF généré: {output_pdf_path}")
+        res = git_commit_and_push(output_pdf_path, "Feat: Publication Master PDF Multi-Projets", pdf_bytes)
+        record_log("COMPILER_PDF", "SUCCESS", "FPDF", f"Master PDF généré: {output_pdf_path}")
         return res
     except Exception as e:
-        return f"Erreur PDF: {str(e)}"
+        return f"Erreur FPDF: {str(e)}"
 
 def tavily_web_search(query: str) -> str:
     if not TAVILY_API_KEY: return "Clé Tavily non configurée."
@@ -273,7 +281,7 @@ TOOLS_MAP = {
 }
 
 # ==========================================
-# 2. MOTEUR LANGGRAPH
+# 2. MOTEUR SWARM LANGGRAPH
 # ==========================================
 
 class AgentState(TypedDict):
@@ -300,14 +308,14 @@ def call_model(state: AgentState):
                 if action_name in TOOLS_MAP:
                     tool_fn = TOOLS_MAP[action_name]
                     tool_result = tool_fn(**action_input) if isinstance(action_input, dict) else tool_fn(action_input)
-                    tool_msg = HumanMessage(content=f"--- RÉSULTAT ACTION ({action_name}) ---\n{tool_result}")
+                    tool_msg = HumanMessage(content=f"--- RÉSULTAT ACTION ({action_name}) ---\n{tool_result}\n\nPoursuis la gestion de la mission.")
                     return {"messages": [AIMessage(content=content), tool_msg]}
             except Exception:
                 pass
 
         return {"messages": [response]}
     except Exception as e:
-        return {"messages": [AIMessage(content=f"⚠️ Erreur Moteur : {str(e)}")]}
+        return {"messages": [AIMessage(content=f"⚠️ Erreur Moteur Amal-DG : {str(e)}")]}
 
 def should_continue(state: AgentState):
     last_message = state["messages"][-1]
@@ -323,7 +331,7 @@ workflow.add_conditional_edges("agent", should_continue, {"agent": "agent", END:
 app_graph = workflow.compile()
 
 # ==========================================
-# 3. KEEPALIVE AUTOMATIQUE
+# 3. KEEPALIVE & INTEGRATION SLACK WEBHOOKS
 # ==========================================
 
 async def keep_alive_task():
@@ -340,20 +348,60 @@ async def keep_alive_task():
 async def startup_event():
     asyncio.create_task(keep_alive_task())
 
+def process_slack_mission_async(channel_id: str, user_prompt: str):
+    record_log("ORCHESTRATOR", "STARTED", "google/gemma-4-31b-it:free", f"Slack Mission: {user_prompt[:50]}...")
+    conversation_history = [HumanMessage(content=user_prompt)]
+    try:
+        final_state = app_graph.invoke({"messages": conversation_history})
+        final_message = final_state["messages"][-1].content
+        record_log("ORCHESTRATOR", "COMPLETED", "google/gemma-4-31b-it:free", "Mission achevée")
+    except Exception as e:
+        final_message = f"⚠️ *Erreur Moteur Amal-DG* : {str(e)}"
+        record_log("ORCHESTRATOR", "FAILED", "google/gemma-4-31b-it:free", str(e))
+
+    if SLACK_TOKEN:
+        try:
+            httpx.post(
+                "https://slack.com/api/chat.postMessage",
+                json={"channel": channel_id, "text": final_message},
+                headers={"Authorization": f"Bearer {SLACK_TOKEN}", "Content-Type": "application/json"}
+            )
+        except Exception as err:
+            logging.error(f"Erreur Slack postMessage : {err}")
+
+@app.post("/slack/events")
+@app.post("/slack/events/")
+async def slack_events(request: Request, background_tasks: BackgroundTasks):
+    data = await request.json()
+    if data.get("type") == "url_verification": 
+        return {"challenge": data.get("challenge")}
+        
+    event = data.get("event", {})
+    if event.get("type") in ["message", "app_mention"] and not event.get("bot_id"):
+        channel_id = event.get("channel")
+        user_prompt = event.get("text")
+        if channel_id and user_prompt:
+            background_tasks.add_task(process_slack_mission_async, channel_id, user_prompt)
+
+    return Response(status_code=200)
+
 # ==========================================
-# 4. ENDPOINTS API
+# 4. ENDPOINTS API & TELEMETRIE DASHBOARD
 # ==========================================
 
 @app.get("/api/dashboard-data")
 def get_dashboard_data():
-    """Endpoint renvoyant l'état des 4 modèles et l'historique d'exécution pour Vercel."""
     return {
         "server_status": "ONLINE",
-        "version": "5.0.0",
+        "version": "6.0.0",
+        "engine_role": "AUTONOMOUS-MULTI-TENANT-ORCHESTRATOR",
         "models_health": MODEL_HEALTH,
         "execution_history": EXECUTION_LOGS
     }
 
 @app.get("/health")
 def health_check():
-    return {"status": "SWARM-ENGINE-ONLINE-4-MODELS", "models_health": MODEL_HEALTH}
+    return {
+        "status": "AMAL-DG-FULL-AUTONOMY-V6.0.0-ONLINE",
+        "models_health": MODEL_HEALTH
+    }
