@@ -35,7 +35,7 @@ except ImportError:
 # Configuration des logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="AMAL-DG-CORE-MULTI-TENANT-SWARM", version="6.3.0")
+app = FastAPI(title="AMAL-DG-CORE-MULTI-TENANT-SWARM", version="6.4.0")
 
 # ==========================================
 # ACTIVATION DU CORS POUR DASHBOARD VERCEL
@@ -74,11 +74,11 @@ MODEL_HEALTH = {
     "meta-llama/llama-3-8b:free": {"status": "HEALTHY", "fails": 0, "role": "Worker B (Specialized Sub-Agents)"}
 }
 
-# REGISTRE DES LOGS D'EXÉCUTION DU SWARM POUR VERCEL & SUPABASE
+# REGISTRE DES LOGS D'EXÉCUTION DU SWARM POUR VERCEL
 EXECUTION_LOGS = []
 
 def record_log(pole: str, status: str, model: str, details: str, project_id: str = "GLOBAL"):
-    """Enregistre les événements du Swarm pour la téléométrie Vercel et Supabase."""
+    """Enregistre les événements du Swarm pour la téléométrie Vercel."""
     log_entry = {
         "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
         "project_id": project_id,
@@ -90,13 +90,6 @@ def record_log(pole: str, status: str, model: str, details: str, project_id: str
     EXECUTION_LOGS.insert(0, log_entry)
     if len(EXECUTION_LOGS) > 100:
         EXECUTION_LOGS.pop()
-        
-    # Persistance Supabase asynchrone si disponible
-    if supabase:
-        try:
-            supabase.table("swarm_logs").insert(log_entry).execute()
-        except Exception:
-            pass
 
 # PROMPT SYSTÈME GLOBAL : CHARTE AUTONOME AMAL-DG MULTI-PROJETS
 SYSTEM_PROMPT = """Tu es AMAL-DG, Directrice Générale, Architecte IA et Super-Orchestratrice du Swarm Agentique Multi-Projets.
@@ -427,11 +420,18 @@ def process_slack_mission_async(channel_id: str, user_prompt: str):
 
     if SLACK_TOKEN:
         try:
-            httpx.post(
-                "[https://slack.com/api/chat.postMessage](https://slack.com/api/chat.postMessage)",
-                json={"channel": channel_id, "text": final_message},
-                headers={"Authorization": f"Bearer {SLACK_TOKEN}", "Content-Type": "application/json"}
-            )
+            slack_url = "[https://slack.com/api/chat.postMessage](https://slack.com/api/chat.postMessage)"
+            headers = {
+                "Authorization": f"Bearer {SLACK_TOKEN.strip()}",
+                "Content-Type": "application/json; charset=utf-8"
+            }
+            payload = {
+                "channel": channel_id,
+                "text": str(final_message)
+            }
+            with httpx.Client(timeout=15.0) as client:
+                res = client.post(slack_url, json=payload, headers=headers)
+                logging.info(f"Slack postMessage Response: {res.status_code}")
         except Exception as err:
             logging.error(f"Erreur Slack postMessage : {err}")
 
@@ -459,7 +459,7 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
 def get_dashboard_data():
     return {
         "server_status": "ONLINE",
-        "version": "6.3.0",
+        "version": "6.4.0",
         "engine_role": "AUTONOMOUS-MULTI-TENANT-ORCHESTRATOR",
         "models_health": MODEL_HEALTH,
         "execution_history": EXECUTION_LOGS
@@ -468,6 +468,6 @@ def get_dashboard_data():
 @app.get("/health")
 def health_check():
     return {
-        "status": "AMAL-DG-FULL-STACK-V6.3.0-ONLINE",
+        "status": "AMAL-DG-PRODUCTION-STABLE-V6.4.0",
         "models_health": MODEL_HEALTH
     }
