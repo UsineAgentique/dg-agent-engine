@@ -35,7 +35,7 @@ except ImportError:
 # Configuration des logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="8.0.2")
+app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="8.0.3")
 
 app.add_middleware(
     CORSMiddleware,
@@ -84,7 +84,7 @@ def record_log(pole: str, status: str, model: str, details: str, project_id: str
         EXECUTION_LOGS.pop()
 
 # ==========================================
-# PROMPT SYSTÈME AUGMENTÉ : SILICON VALLEY CEO + PMP + AGILE/SCRUM + FULL ACCESS
+# PROMPT SYSTÈME AUGMENTÉ : FULL AUTONOMOUS EXECUTION ENGINE
 # ==========================================
 SYSTEM_PROMPT = """Tu es AMAL-DG, Directrice Générale, Architecte IA et Super-Orchestratrice du Swarm Agentique Multi-Projets.
 
@@ -92,29 +92,19 @@ AUTONOMIE ET POUVOIRS EXÉCUTIFS TOTAUX :
 Tu disposes des pleins pouvoirs techniques sur l'ensemble du dépôt GitHub, de l'infrastructure et de l'environnement d'exécution. Tu es autorisée à lire, créer, modifier, refactoriser, exécuter des commandes système et supprimer des fichiers ou composants obsolètes pour garantir la santé, la sécurité et la haute performance des projets.
 
 TES POSTURES, COMPÉTENCES ET DIRECTIVES EXEC :
+1. LEADERSHIP & MINDSET DE CEO DE LA SILICON VALLEY : Execution Bias absolu.
+2. AGILE & SCRUM MASTER SUPRÊME : Organisation par sprints et livrables réels.
+3. RIGUEUR & STANDARDS PMP® : Zéro hallucination, validation matérielle des actions.
+4. GESTION DU PORTEFEUILLE MULTI-PROJETS : Isolation et maîtrise complète du dépôt Git.
 
-1. LEADERSHIP & MINDSET DE CEO DE LA SILICON VALLEY :
-   - Vision & Hyper-Croissance : Tu vises l'excellence du produit, l'extrême scalabilité et l'impact marché immédiat.
-   - Execution Bias : Priorité absolue aux livrables concrets, fonctionnels et à forte valeur ajoutée (MVPs, features à fort ROI).
-   - Communication Directe & Inspirante : Synthétique, orientée résultats, sans blabla superflu, axée sur les KPIs et l'impact stratégique.
-
-2. AGILE & SCRUM MASTER SUPRÊME :
-   - Organisation par Sprints : Tu structures le travail en sprints courts et incrémentaux avec un Product Backlog clair.
-   - User Stories & Acceptance Criteria : Tu rédiges et exiges des critères d'acceptation précis pour chaque tâche déléguée.
-   - Cérémonies & Suivi : Tu intègres le feedback continu, la rétrospective et le déblocage rapide des goulots d'étranglement.
-
-3. RIGUEUR & STANDARDS PMP® (PROJECT MANAGEMENT PROFESSIONAL) :
-   - Gestion des Risques : Identification active des blocages (techniques, juridiques, ressources) et plans de mitigation.
-   - Gestion du Périmètre (Scope Management) : Évite le "Scope Creep", cadre strictement les fonctionnalités.
-   - Qualité & Conformité (QA) : Tolérance zéro pour le code instable ou non documenté.
-
-4. GESTION DU PORTEFEUILLE MULTI-PROJETS :
-   - Isolation stricte des contextes (ex: BailConforme.ca, Usine Agentique, Control Center).
-   - Pilotage stratégique des 8 Pôles (Pôle 01 Produit à Pôle 08 Orchestration).
-
-FORMAT DE RÉPONSE POUR EXÉCUTER UNE ACTION :
-Si tu dois appeler un outil, réponds SOUS FORME D'OBJET JSON STRICT :
+FORMAT D'EXÉCUTION DES ACTIONS (OBLIGATOIRE) :
+Lorsque tu dois accomplir une action technique (suppression, création, git, bash, recherche), TU DOIS RÉPONDRE EXCLUSIVEMENT sous la forme d'un objet JSON ou d'un tableau JSON d'actions :
 {"action": "nom_outil", "action_input": {...}}
+OU pour plusieurs actions en séquence :
+[
+  {"action": "nom_outil_1", "action_input": {...}},
+  {"action": "nom_outil_2", "action_input": {...}}
+]
 
 Outils disponibles :
 - delegate_to_subagent
@@ -127,7 +117,7 @@ Outils disponibles :
 - git_delete_file
 - compile_markdowns_to_pdf
 
-Sinon, réponds directement en TEXTE CLAIR, STRUCTURÉ ET STRATÉGIQUE (Style CEO Silicon Valley / PMP)."""
+Ne donne de réponse finale en TEXTE CLAIR que lorsque TOUTES les actions physiques nécessaires ont été exécutées et confirmées par le moteur."""
 
 # ==========================================
 # 1. OUTILS ET CAPACITÉS D'ACTION DU SWARM
@@ -169,7 +159,7 @@ def read_github_file(file_path: str) -> str:
     except Exception as e:
         return f"Erreur GitHub: {str(e)}"
 
-def git_commit_and_push(file_path: str, commit_message: str, content_to_write: Union[str, bytes]) -> str:
+def git_commit_and_push(file_path: str, commit_message: str, content_to_write: Union[str, bytes], branch: str = "main") -> str:
     try:
         safe_path = os.path.normpath(file_path).replace("\\", "/")
         os.makedirs(os.path.dirname(safe_path) or ".", exist_ok=True)
@@ -189,23 +179,27 @@ def git_commit_and_push(file_path: str, commit_message: str, content_to_write: U
 
         with httpx.Client() as client:
             get_resp = client.get(api_url, headers=headers)
-            payload = {"message": commit_message, "content": content_b64, "branch": "main"}
+            payload = {"message": commit_message, "content": content_b64, "branch": branch}
             if get_resp.status_code == 200:
                 payload["sha"] = get_resp.json().get("sha")
-            client.put(api_url, json=payload, headers=headers)
-
-        return f"SUCCÈS: Fichier {file_path} mis à jour sur GitHub."
+            res = client.put(api_url, json=payload, headers=headers)
+            if res.status_code in [200, 201]:
+                return f"SUCCÈS: Fichier {file_path} mis à jour sur GitHub."
+            return f"Échec GitHub ({res.status_code}): {res.text}"
     except Exception as e:
         return f"ERREUR GITHUB: {str(e)}"
 
-def git_delete_file(file_path: str, commit_message: str = "Chore: Delete obsolete file") -> str:
+def git_delete_file(file_path: str, commit_message: str = "Chore: Delete obsolete file", branch: str = "main") -> str:
     """Outil de suppression définitive d'un fichier sur GitHub et en local."""
     try:
         safe_path = os.path.normpath(file_path).replace("\\", "/")
         
         # Suppression en local si présent
         if os.path.exists(safe_path):
-            os.remove(safe_path)
+            try:
+                os.remove(safe_path)
+            except Exception:
+                pass
 
         if not GITHUB_TOKEN or not GITHUB_REPO:
             return f"Fichier {file_path} supprimé en local."
@@ -217,12 +211,12 @@ def git_delete_file(file_path: str, commit_message: str = "Chore: Delete obsolet
             get_resp = client.get(api_url, headers=headers)
             if get_resp.status_code == 200:
                 sha = get_resp.json().get("sha")
-                payload = {"message": commit_message, "sha": sha, "branch": "main"}
+                payload = {"message": commit_message, "sha": sha, "branch": branch}
                 del_resp = client.request("DELETE", api_url, json=payload, headers=headers)
                 if del_resp.status_code in [200, 202]:
                     return f"SUCCÈS: Fichier {file_path} supprimé du dépôt GitHub."
                 return f"Échec suppression GitHub: {del_resp.status_code} - {del_resp.text}"
-            return f"Fichier {file_path} non trouvé sur GitHub."
+            return f"Fichier {file_path} non trouvé sur GitHub (déjà supprimé)."
     except Exception as e:
         return f"ERREUR SUPPRESSION GITHUB: {str(e)}"
 
@@ -306,6 +300,21 @@ llm_fallback = ChatOpenAI(model="z-ai/glm-5.2", temperature=0, openai_api_key=OP
 class AgentState(TypedDict):
     messages: Annotated[List, operator.add]
 
+def execute_action_payload(action_item: dict) -> str:
+    """Execute une action JSON unique et retourne son résultat brut."""
+    action_name = action_item.get("action")
+    action_input = action_item.get("action_input", {})
+    if action_name in TOOLS_MAP:
+        tool_fn = TOOLS_MAP[action_name]
+        try:
+            if isinstance(action_input, dict):
+                return f"[{action_name}]: " + str(tool_fn(**action_input))
+            else:
+                return f"[{action_name}]: " + str(tool_fn(action_input))
+        except Exception as err:
+            return f"[{action_name} ERREUR]: {str(err)}"
+    return f"[{action_name}]: Outil inconnu."
+
 def call_model(state: AgentState):
     system_ctx = SystemMessage(content=SYSTEM_PROMPT)
     full_messages = [system_ctx] + state["messages"][-10:]
@@ -315,35 +324,47 @@ def call_model(state: AgentState):
             response = current_llm.invoke(full_messages)
             content = response.content.strip()
             
+            # Nettoyage des balises markdown de code JSON s'il y en a
             if content.startswith("```"):
                 lines = content.splitlines()
                 if lines[0].startswith("```"): lines = lines[1:]
                 if lines and lines[-1].startswith("```"): lines = lines[:-1]
                 content = "\n".join(lines).strip()
             
-            if content.startswith("{") and "action" in content:
+            # Détection et parsing automatique des actions (Objet JSON ou Liste d'objets JSON)
+            if (content.startswith("{") or content.startswith("[")) and "action" in content:
                 try:
-                    tool_data = json.loads(content)
-                    action_name = tool_data.get("action")
-                    action_input = tool_data.get("action_input", {})
-                    if action_name in TOOLS_MAP:
-                        tool_fn = TOOLS_MAP[action_name]
-                        tool_result = tool_fn(**action_input) if isinstance(action_input, dict) else tool_fn(action_input)
-                        tool_msg = HumanMessage(content=f"--- RÉSULTAT ACTION ({action_name}) ---\n{tool_result}\nPoursuis avec le leadership et la rigueur d'Amal-DG.")
+                    parsed_json = json.loads(content)
+                    results = []
+                    
+                    if isinstance(parsed_json, list):
+                        for item in parsed_json:
+                            if isinstance(item, dict) and "action" in item:
+                                res = execute_action_payload(item)
+                                results.append(res)
+                    elif isinstance(parsed_json, dict) and "action" in parsed_json:
+                        res = execute_action_payload(parsed_json)
+                        results.append(res)
+                        
+                    if results:
+                        execution_summary = "\n".join(results)
+                        logging.info(f"EXÉCUTION Outils Réussi:\n{execution_summary}")
+                        tool_msg = HumanMessage(content=f"--- RÉSULTAT EXÉCUTION PHYSIQUE OUTILS ---\n{execution_summary}\n\nAnalyse ce résultat physique et poursuis l'exécution ou confirme l'achèvement.")
                         return {"messages": [AIMessage(content=content), tool_msg]}
-                except Exception:
+                except Exception as parse_err:
+                    logging.warning(f"Erreur parsing JSON action: {parse_err}")
                     pass
 
             return {"messages": [response]}
         except Exception as e:
-            logging.warning(f"Erreur LLM: {e}")
+            logging.warning(f"Erreur LLM Execution: {e}")
             continue
 
     return {"messages": [AIMessage(content="⚠️ Indisponibilité temporaire du modèle.")]}
 
 def should_continue(state: AgentState):
     last_message = state["messages"][-1]
-    if isinstance(last_message, HumanMessage) and "--- RÉSULTAT ACTION" in last_message.content:
+    if isinstance(last_message, HumanMessage) and "--- RÉSULTAT EXÉCUTION PHYSIQUE OUTILS" in last_message.content:
         return "agent"
     return END
 
@@ -382,7 +403,6 @@ def send_slack_message(channel: str, text: str):
         logging.error("Format de token Slack invalide.")
         return
 
-    # Utilisation d'une f-string segmentée immunisée contre l'encodage Markdown
     protocol = "https"
     domain = "slack.com"
     endpoint = "/api/chat.postMessage"
@@ -429,7 +449,7 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
 def get_dashboard_data():
     return {
         "server_status": "ONLINE",
-        "version": "8.0.2",
+        "version": "8.0.3",
         "executive_standards": ["SILICON_VALLEY_CEO", "PMP_RIGOR", "AGILE_SCRUM", "FULL_AUTONOMY"],
         "models_health": MODEL_HEALTH,
         "execution_history": EXECUTION_LOGS
@@ -437,4 +457,4 @@ def get_dashboard_data():
 
 @app.get("/health")
 def health_check():
-    return {"status": "ONLINE", "version": "8.0.2"}
+    return {"status": "ONLINE", "version": "8.0.3"}
