@@ -7,7 +7,10 @@ langgraph
 langchain-core
 langchain-groq
 langchain-openai
+langchain-google-genai
+langchain-huggingface
 groq
+huggingface_hub
 firecrawl-py
 e2b_code_interpreter
 apscheduler
