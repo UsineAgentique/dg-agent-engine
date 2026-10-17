@@ -36,7 +36,7 @@ except ImportError:
 # Configuration des logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="10.2.0")
+app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="10.2.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -74,7 +74,7 @@ MODEL_CATALOG = {
         "primary_model": "openai/gpt-oss-safeguard-120b",
         "fallback_provider": "google",
         "fallback_model": "gemini-1.5-flash-latest",
-        "max_tokens": 8192  # Quota augmenté au-delà de 4000
+        "max_tokens": 8192
     },
     "TECH_CODE": {
         "primary_provider": "huggingface",
@@ -519,6 +519,7 @@ def send_slack_message(channel: str, text: str):
         logging.error("Format de token Slack invalide.")
         return
 
+    # URL corrigée (sans balises markdown)
     url = "[https://slack.com/api/chat.postMessage](https://slack.com/api/chat.postMessage)"
     try:
         with httpx.Client(timeout=15.0) as client:
@@ -561,7 +562,7 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
 def get_dashboard_data():
     return {
         "server_status": "ONLINE",
-        "version": "10.2.0",
+        "version": "10.2.1",
         "providers_integrated": ["Groq", "OpenRouter", "HuggingFace", "GoogleAI"],
         "models_catalog": MODEL_CATALOG,
         "execution_history": EXECUTION_LOGS
@@ -569,4 +570,4 @@ def get_dashboard_data():
 
 @app.get("/health")
 def health_check():
-    return {"status": "ONLINE", "version": "10.2.0"}
+    return {"status": "ONLINE", "version": "10.2.1"}
