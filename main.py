@@ -36,7 +36,7 @@ except ImportError:
 # Configuration des logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="10.0.0")
+app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="10.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -66,43 +66,43 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and
 firecrawl_app = FirecrawlApp(api_key=FIRECRAWL_API_KEY) if FIRECRAWL_API_KEY and FirecrawlApp else None
 
 # ==========================================
-# MATRICE DES MODÈLES & ROUTAGE RESILIENT 0$
+# MATRICE DES MODÈLES & QUOTAS ÉTENDUS (> 4000)
 # ==========================================
 MODEL_CATALOG = {
     "AMAL_DG": {
         "primary_provider": "huggingface",
         "primary_model": "openai/gpt-oss-safeguard-120b",
         "fallback_provider": "google",
-        "fallback_model": "gemini-1.5-flash",
-        "max_tokens": 4096
+        "fallback_model": "gemini-1.5-flash-latest",
+        "max_tokens": 8192  # Quota augmenté au-delà de 4000
     },
     "TECH_CODE": {
         "primary_provider": "huggingface",
         "primary_model": "Qwen/Qwen2.5-Coder-32B-Instruct",
         "fallback_provider": "openrouter",
         "fallback_model": "cohere/north-mini-code:free",
-        "max_tokens": 4096
+        "max_tokens": 8192
     },
     "LEGAL_TAL": {
         "primary_provider": "huggingface",
         "primary_model": "deepseek-ai/DeepSeek-R1-Distill-Qwen-33B",
         "fallback_provider": "openrouter",
         "fallback_model": "google/gemma-4-31b:free",
-        "max_tokens": 4096
+        "max_tokens": 8192
     },
     "STRATEGY_GLM": {
         "primary_provider": "huggingface",
         "primary_model": "zai-org/GLM-4.7-Flash",
         "fallback_provider": "groq",
         "fallback_model": "llama-3.3-70b-versatile",
-        "max_tokens": 4096
+        "max_tokens": 8192
     },
     "WORKERS": {
         "primary_provider": "groq",
         "primary_model": "llama-3.1-8b-instant",
         "fallback_provider": "huggingface",
         "fallback_model": "google/gemma-3-1b-it",
-        "max_tokens": 2048
+        "max_tokens": 4096
     }
 }
 
@@ -122,10 +122,10 @@ def record_log(pole: str, status: str, model: str, details: str, project_id: str
         EXECUTION_LOGS.pop()
 
 # ==========================================
-# MOTEUR MULTI-PROVIDERS & CIRCUIT BREAKER ANTI-SATURATION
+# MOTEUR MULTI-PROVIDERS & CIRCUIT BREAKER
 # ==========================================
-async def invoke_llm_provider(provider: str, model_name: str, messages: List[Any], max_tokens: int = 4096) -> str:
-    timeout_seconds = 25.0
+async def invoke_llm_provider(provider: str, model_name: str, messages: List[Any], max_tokens: int = 8192) -> str:
+    timeout_seconds = 30.0
     
     if provider == "groq":
         if not GROQ_API_KEY:
@@ -137,13 +137,12 @@ async def invoke_llm_provider(provider: str, model_name: str, messages: List[Any
     elif provider == "openrouter":
         if not OPENROUTER_API_KEY:
             raise ValueError("OPENROUTER_API_KEY manquante.")
-        safe_max_tokens = min(max_tokens, 4096)
         client = ChatOpenAI(
             model=model_name,
             temperature=0.1,
             openai_api_key=OPENROUTER_API_KEY,
             openai_api_base="https://openrouter.ai/api/v1",
-            max_tokens=safe_max_tokens
+            max_tokens=max_tokens
         )
         res = await asyncio.to_thread(client.invoke, messages)
         return res.content
@@ -194,7 +193,7 @@ async def invoke_llm_provider(provider: str, model_name: str, messages: List[Any
 
 async def execute_pole_llm(pole_key: str, messages: List[Any]) -> str:
     cfg = MODEL_CATALOG.get(pole_key, MODEL_CATALOG["WORKERS"])
-    max_tokens = cfg.get("max_tokens", 4096)
+    max_tokens = cfg.get("max_tokens", 8192)
     
     # 1. Primary
     try:
@@ -206,7 +205,7 @@ async def execute_pole_llm(pole_key: str, messages: List[Any]) -> str:
         logging.warning(f"[{pole_key}] ECHEC Primary ({cfg['primary_model']}): {err}. Fallback...")
         record_log(pole_key, "FALLBACK_TRIGGERED", f"{cfg['primary_provider']}/{cfg['primary_model']}", f"Erreur: {str(err)[:100]}")
 
-    # 2. Fallback (Google Gemini ou OpenRouter)
+    # 2. Fallback
     try:
         logging.info(f"[{pole_key}] Fallback: {cfg['fallback_provider']} / {cfg['fallback_model']}")
         result = await invoke_llm_provider(cfg['fallback_provider'], cfg['fallback_model'], messages, max_tokens)
@@ -218,7 +217,7 @@ async def execute_pole_llm(pole_key: str, messages: List[Any]) -> str:
         return f"⚠️ Erreur d'exécution sur le pôle {pole_key}: Service temporairement indisponible."
 
 # ==========================================
-# SYSTEM PROMPT EXECUTIVE (ALIGNÉ SUR DG_SYSTEME.MD v10.0)
+# SYSTEM PROMPT EXECUTIVE
 # ==========================================
 SYSTEM_PROMPT = """Tu es AMAL-DG, Directrice Générale, Architecte IA et Orchestratrice Suprême du Swarm Agentique.
 
@@ -258,14 +257,14 @@ def tavily_web_search(query: str) -> str:
     try:
         with httpx.Client(timeout=15.0) as client:
             res = client.post("https://api.tavily.com/search", json={"api_key": TAVILY_API_KEY, "query": query, "search_depth": "advanced"}, timeout=15.0)
-            return res.json().get("answer", str(res.json().get("results", [])))[:1500]
+            return res.json().get("answer", str(res.json().get("results", [])))[:2000]
     except Exception as e:
         return f"Erreur Tavily Search: {str(e)}"
 
 def firecrawl_scrape_url(url: str) -> str:
     if firecrawl_app:
         try:
-            return firecrawl_app.scrape_url(url, params={'formats': ['markdown']}).get('markdown', '')[:1500]
+            return firecrawl_app.scrape_url(url, params={'formats': ['markdown']}).get('markdown', '')[:2000]
         except Exception as e:
             return f"Erreur Firecrawl Scrape: {str(e)}"
     return "Firecrawl non disponible."
@@ -284,7 +283,7 @@ def execute_system_command(command: str) -> str:
     try:
         result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
         output = result.stdout if result.stdout else result.stderr
-        return output[:1500] if output else "Commande exécutée avec succès."
+        return output[:2000] if output else "Commande exécutée avec succès."
     except Exception as e:
         return f"Erreur exécution système: {str(e)}"
 
@@ -362,7 +361,6 @@ def git_delete_file(file_path: str, commit_message: str = "Chore: Delete obsolet
         return f"ERREUR SUPPRESSION GITHUB: {str(e)}"
 
 def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "", priority: str = "MEDIUM", search_query: str = "", project_id: str = "GLOBAL") -> str:
-    """Délégation universelle avec intégration temps réel et gestion anti-saturation."""
     team_lower = team.lower()
     
     live_context = ""
@@ -380,14 +378,14 @@ def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "
         pole_key = "WORKERS"
     
     prompt_msg = [
-        SystemMessage(content=f"Tu es l'agent sous-spécialisé du pôle '{team.upper()}' (Priorité: {priority}). Sois concis et précis. Zéro hallucination.{live_context}"),
+        SystemMessage(content=f"Tu es l'agent sous-spécialisé du pôle '{team.upper()}' (Priorité: {priority}). Sois précis et détaillé. Zéro hallucination.{live_context}"),
         HumanMessage(content=task_description)
     ]
     
     try:
         loop = asyncio.get_running_loop()
         future = asyncio.run_coroutine_threadsafe(execute_pole_llm(pole_key, prompt_msg), loop)
-        result_text = future.result(timeout=30.0)
+        result_text = future.result(timeout=35.0)
     except RuntimeError:
         result_text = asyncio.run(execute_pole_llm(pole_key, prompt_msg))
     except Exception as ex:
@@ -396,7 +394,7 @@ def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "
     if save_to_file and not result_text.startswith("⚠️"):
         git_commit_and_push(save_to_file, f"Feat({team}/{project_id}): Deliverable", result_text)
         
-    return result_text[:1500]
+    return result_text[:2500]
 
 def compile_markdowns_to_pdf(folder_path: str = "docs", output_pdf_path: str = "Master_Report.pdf") -> str:
     try:
@@ -448,8 +446,7 @@ def execute_action_payload(action_item: dict) -> str:
 
 async def call_model_async(state: AgentState):
     system_ctx = SystemMessage(content=SYSTEM_PROMPT)
-    # STRATÉGIE WINDOWED CONTEXT : Tronquage strict à 8 messages max pour éliminer la saturation de context
-    full_messages = [system_ctx] + state["messages"][-8:]
+    full_messages = [system_ctx] + state["messages"][-10:]
     
     content = await execute_pole_llm("AMAL_DG", full_messages)
     content = content.strip()
@@ -564,7 +561,7 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
 def get_dashboard_data():
     return {
         "server_status": "ONLINE",
-        "version": "10.0.0",
+        "version": "10.2.0",
         "providers_integrated": ["Groq", "OpenRouter", "HuggingFace", "GoogleAI"],
         "models_catalog": MODEL_CATALOG,
         "execution_history": EXECUTION_LOGS
@@ -572,4 +569,4 @@ def get_dashboard_data():
 
 @app.get("/health")
 def health_check():
-    return {"status": "ONLINE", "version": "10.0.0"}
+    return {"status": "ONLINE", "version": "10.2.0"}
