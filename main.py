@@ -4,6 +4,7 @@ import json
 import base64
 import logging
 import asyncio
+import subprocess
 from typing import TypedDict, Annotated, List, Union, Dict, Any
 from datetime import datetime
 
@@ -15,10 +16,22 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
+from supabase import create_client, Client
+from fpdf import FPDF
+
+try:
+    from firecrawl import FirecrawlApp
+except ImportError:
+    FirecrawlApp = None
+
+try:
+    from e2b_code_interpreter import CodeInterpreter
+except ImportError:
+    CodeInterpreter = None
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="AMAL-DG-ENGINE", version="10.7.0")
+app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM-ENTERPRISE", version="11.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -28,21 +41,272 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Environment Variables
+# ==========================================
+# CREDENTIALS & ENVIRONMENT
+# ==========================================
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 SLACK_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
+E2B_API_KEY = os.getenv("E2B_API_KEY")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPOSITORY")
 
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
+firecrawl_app = FirecrawlApp(api_key=FIRECRAWL_API_KEY) if FIRECRAWL_API_KEY and FirecrawlApp else None
+
 # ==========================================
-# ROUTES SANITÉ & SLACK (DÉCLARÉES UPFRONT)
+# CATALOGUE DE MODÈLES RÉSILIENTS
+# ==========================================
+MODEL_CATALOG = {
+    "AMAL_DG": {
+        "primary_provider": "groq",
+        "primary_model": "llama-3.1-8b-instant",
+        "fallback_provider": "openrouter",
+        "fallback_model": "meta-llama/llama-3.1-8b-instruct:free",
+        "max_tokens": 4096
+    },
+    "TECH_CODE": {
+        "primary_provider": "groq",
+        "primary_model": "llama-3.1-8b-instant",
+        "fallback_provider": "openrouter",
+        "fallback_model": "qwen/qwen-2.5-coder-32b-instruct:free",
+        "max_tokens": 4096
+    },
+    "LEGAL_TAL": {
+        "primary_provider": "groq",
+        "primary_model": "llama-3.1-8b-instant",
+        "fallback_provider": "openrouter",
+        "fallback_model": "meta-llama/llama-3.1-8b-instruct:free",
+        "max_tokens": 4096
+    }
+}
+
+# ==========================================
+# MOTEUR LLM MULTI-PROVIDER SÉCURISÉ
+# ==========================================
+async def invoke_llm(provider: str, model: str, messages: List[Any], max_tokens: int = 4096) -> str:
+    if provider == "groq":
+        if not GROQ_API_KEY: raise ValueError("GROQ_API_KEY manquante.")
+        client = ChatGroq(model=model, temperature=0.1, groq_api_key=GROQ_API_KEY, max_tokens=max_tokens)
+        res = await asyncio.to_thread(client.invoke, messages)
+        return res.content
+    elif provider == "openrouter":
+        if not OPENROUTER_API_KEY: raise ValueError("OPENROUTER_API_KEY manquante.")
+        client = ChatOpenAI(model=model, temperature=0.1, openai_api_key=OPENROUTER_API_KEY, openai_api_base="https://openrouter.ai/api/v1", max_tokens=max_tokens)
+        res = await asyncio.to_thread(client.invoke, messages)
+        return res.content
+    raise ValueError(f"Provider inconnu: {provider}")
+
+async def execute_pole_llm(pole_key: str, messages: List[Any]) -> str:
+    cfg = MODEL_CATALOG.get(pole_key, MODEL_CATALOG["AMAL_DG"])
+    # Tentative Primary
+    try:
+        return await invoke_llm(cfg["primary_provider"], cfg["primary_model"], messages, cfg["max_tokens"])
+    except Exception as err:
+        logging.warning(f"[{pole_key}] Échec Primary ({cfg['primary_model']}): {err}. Bascule sur le Fallback...")
+    # Tentative Fallback
+    try:
+        return await invoke_llm(cfg["fallback_provider"], cfg["fallback_model"], messages, cfg["max_tokens"])
+    except Exception as fallback_err:
+        logging.error(f"[{pole_key}] Échec Critique Fallback: {fallback_err}")
+        return f"⚠️ Erreur critique du pôle {pole_key}: Services LLM indisponibles."
+
+# ==========================================
+# SYSTÈME DE PERMISSIONS & OUTILS AUTONOMES
+# ==========================================
+def tavily_web_search(query: str) -> str:
+    if not TAVILY_API_KEY: return "Erreur: TAVILY_API_KEY non configurée."
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            res = client.post("https://api.tavily.com/search", json={"api_key": TAVILY_API_KEY, "query": query, "search_depth": "advanced"})
+            return str(res.json().get("results", []))[:2000]
+    except Exception as e:
+        return f"Erreur Tavily: {str(e)}"
+
+def read_github_file(file_path: str) -> str:
+    try:
+        if not GITHUB_TOKEN or not GITHUB_REPO:
+            if os.path.exists(file_path):
+                with open(file_path, "r", encoding="utf-8") as f: return f.read()
+            return f"Fichier {file_path} introuvable."
+        headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{file_path}"
+        with httpx.Client() as client:
+            resp = client.get(url, headers=headers)
+            if resp.status_code == 200:
+                return base64.b64decode(resp.json().get("content", "")).decode("utf-8")
+            return f"Fichier introuvable sur GitHub ({resp.status_code})."
+    except Exception as e:
+        return f"Erreur GitHub Read: {str(e)}"
+
+def git_commit_and_push(file_path: str, commit_message: str, content: str) -> str:
+    try:
+        safe_path = os.path.normpath(file_path).replace("\\", "/")
+        os.makedirs(os.path.dirname(safe_path) or ".", exist_ok=True)
+        with open(safe_path, "w", encoding="utf-8") as f: f.write(content)
+        
+        if not GITHUB_TOKEN or not GITHUB_REPO:
+            return f"Fichier {file_path} sauvegardé en local."
+
+        content_b64 = base64.b64encode(content.encode("utf-8")).decode("utf-8")
+        headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{safe_path}"
+        with httpx.Client() as client:
+            get_resp = client.get(url, headers=headers)
+            payload = {"message": commit_message, "content": content_b64, "branch": "main"}
+            if get_resp.status_code == 200:
+                payload["sha"] = get_resp.json().get("sha")
+            res = client.put(url, json=payload, headers=headers)
+            if res.status_code in [200, 201]:
+                return f"SUCCÈS: {file_path} commité et poussé sur GitHub."
+            return f"Échec GitHub Commit ({res.status_code}): {res.text}"
+    except Exception as e:
+        return f"ERREUR GIT PUSH: {str(e)}"
+
+def git_delete_file(file_path: str) -> str:
+    try:
+        safe_path = os.path.normpath(file_path).replace("\\", "/")
+        if os.path.exists(safe_path):
+            try: os.remove(safe_path)
+            except Exception: pass
+
+        if not GITHUB_TOKEN or not GITHUB_REPO:
+            return f"Fichier {file_path} supprimé en local."
+
+        headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{safe_path}"
+        with httpx.Client() as client:
+            get_resp = client.get(url, headers=headers)
+            if get_resp.status_code == 200:
+                sha = get_resp.json().get("sha")
+                payload = {"message": f"Chore: delete {safe_path}", "sha": sha, "branch": "main"}
+                del_resp = client.request("DELETE", url, json=payload, headers=headers)
+                if del_resp.status_code in [200, 202]:
+                    return f"SUCCÈS: {file_path} supprimé de GitHub."
+                return f"Échec suppression GitHub ({del_resp.status_code})"
+            return f"Fichier {file_path} déjà absent de GitHub."
+    except Exception as e:
+        return f"ERREUR SUPPRESSION GITHUB: {str(e)}"
+
+def delegate_to_subagent(team: str, task_description: str, search_query: str = "") -> str:
+    pole_key = "TECH_CODE" if "tech" in team.lower() else "LEGAL_TAL" if "legal" in team.lower() else "AMAL_DG"
+    live_data = tavily_web_search(search_query) if search_query else ""
+    prompt_msgs = [
+        SystemMessage(content=f"Tu es l'agent expert du pôle {team}. Sois rigoureux, technique et direct. Contexte web: {live_data}"),
+        HumanMessage(content=task_description)
+    ]
+    try:
+        loop = asyncio.get_running_loop()
+        future = asyncio.run_coroutine_threadsafe(execute_pole_llm(pole_key, prompt_msgs), loop)
+        return future.result(timeout=30.0)
+    except Exception as e:
+        return f"Erreur sous-agent {team}: {str(e)}"
+
+TOOLS_MAP = {
+    "tavily_web_search": tavily_web_search,
+    "read_github_file": read_github_file,
+    "git_commit_and_push": git_commit_and_push,
+    "git_delete_file": git_delete_file,
+    "delegate_to_subagent": delegate_to_subagent
+}
+
+# ==========================================
+# SYSTEM PROMPT STRUCTURÉ AVEC ANTICIPATION DE BUGS
+# ==========================================
+SYSTEM_PROMPT = """Tu es AMAL-DG, Directrice Générale et Orchestratrice Suprême du Swarm Agentique.
+Tu disposes d'une autonomie totale sur le dépôt GitHub et les outils d'exécution.
+
+PROTOCOLE DE DOUBLE VÉRIFICATION ET D'ANTICIPATION DES BUGS :
+1. Avant d'exécuter une action destructive ou de modification (ex: suppression de fichiers, écriture de code), vérifie par déduction logique si les prérequis sont réunis.
+2. Si une erreur survient lors de l'exécution d'un outil, analyse le message d'erreur retourné, corrige ton plan d'action de manière autonome et tente une alternative immédiatement.
+3. Réponds EXCLUSIVEMENT sous la forme d'un objet JSON d'action valide pour déclencher un outil :
+{"action": "nom_outil", "action_input": {"param1": "valeur1"}}
+OU si tu as terminé ou réponds directement par du texte :
+{"message": "Ton rapport d'exécution ici"}
+"""
+
+# ==========================================
+# LANGGRAPH ORCHESTRATION & SELF-CORRECTION
+# ==========================================
+class AgentState(TypedDict):
+    messages: Annotated[List, operator.add]
+
+async def call_model_async(state: AgentState):
+    full_messages = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"][-8:]
+    content = await execute_pole_llm("AMAL_DG", full_messages)
+    content = content.strip()
+
+    # Nettoyage des balises markdown si l'IA renvoie du JSON dans des blocs code
+    if content.startswith("```"):
+        lines = content.splitlines()
+        if lines[0].startswith("```"): lines = lines[1:]
+        if lines and lines[-1].startswith("```"): lines = lines[:-1]
+        content = "\n".join(lines).strip()
+
+    # Détection et exécution sécurisée de l'action JSON
+    if content.startswith("{") and "action" in content:
+        try:
+            parsed = json.loads(content)
+            action_name = parsed.get("action")
+            action_input = parsed.get("action_input", {})
+            
+            if action_name in TOOLS_MAP:
+                tool_fn = TOOLS_MAP[action_name]
+                tool_result = tool_fn(**action_input) if isinstance(action_input, dict) else tool_fn(action_input)
+                logging.info(f"Outil {action_name} exécuté avec succès: {tool_result}")
+                
+                # Double vérification / Feedback loop pour auto-correction
+                feedback_msg = HumanMessage(content=f"--- RÉSULTAT EXÉCUTION OUTIL [{action_name}] ---\n{tool_result}\n\nVérifie si l'opération a réussi ou si une correction est nécessaire.")
+                return {"messages": [AIMessage(content=content), feedback_msg]}
+        except Exception as parse_err:
+            logging.warning(f"Erreur de parsing/exécution de l'action JSON: {parse_err}")
+
+    return {"messages": [AIMessage(content=content)]}
+
+def should_continue(state: AgentState):
+    last_msg = state["messages"][-1]
+    if isinstance(last_msg, HumanMessage) and "--- RÉSULTAT EXÉCUTION OUTIL" in last_msg.content:
+        return "agent"
+    return END
+
+workflow = StateGraph(AgentState)
+workflow.add_node("agent", call_model_async)
+workflow.set_entry_point("agent")
+workflow.add_conditional_edges("agent", should_continue, {"agent": "agent", END: END})
+
+app_graph = workflow.compile()
+
+# ==========================================
+# ROUTES API & WEBHOOKS SLACK
 # ==========================================
 @app.get("/")
 @app.get("/health")
 def health_check():
-    return {"status": "ONLINE", "version": "10.7.0", "timestamp": str(datetime.utcnow())}
+    return {"status": "ONLINE", "version": "11.0.0", "timestamp": str(datetime.utcnow())}
+
+def send_slack_message(channel: str, text: str):
+    if not SLACK_TOKEN: return
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            client.post(
+                "[https://slack.com/api/chat.postMessage](https://slack.com/api/chat.postMessage)",
+                headers={"Authorization": f"Bearer {SLACK_TOKEN.strip()}", "Content-Type": "application/json; charset=utf-8"},
+                json={"channel": channel, "text": text}
+            )
+    except Exception as e:
+        logging.error(f"Erreur Slack dispatch: {e}")
+
+async def process_slack_mission_async(channel_id: str, user_prompt: str):
+    try:
+        final_state = await app_graph.ainvoke({"messages": [HumanMessage(content=user_prompt)]})
+        final_message = final_state["messages"][-1].content
+    except Exception as e:
+        final_message = f"⚠️ *Erreur Critique Moteur Amal-DG* : {str(e)}"
+    send_slack_message(channel_id, final_message)
 
 @app.post("/slack/events")
 @app.post("/slack/events/")
@@ -63,116 +327,3 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
             background_tasks.add_task(process_slack_mission_async, channel_id, user_prompt)
 
     return Response(status_code=200)
-
-# ==========================================
-# MOTEUR MULTI-PROVIDERS (GROQ / OPENROUTER)
-# ==========================================
-MODEL_CATALOG = {
-    "AMAL_DG": {
-        "primary_provider": "groq",
-        "primary_model": "llama-3.1-8b-instant",
-        "fallback_provider": "openrouter",
-        "fallback_model": "google/gemma-2-9b-it:free",
-        "max_tokens": 4096
-    }
-}
-
-async def invoke_llm_provider(provider: str, model_name: str, messages: List[Any], max_tokens: int = 4096) -> str:
-    if provider == "groq":
-        if not GROQ_API_KEY:
-            raise ValueError("GROQ_API_KEY manquante.")
-        client = ChatGroq(model=model_name, temperature=0.1, groq_api_key=GROQ_API_KEY, max_tokens=max_tokens)
-        res = await asyncio.to_thread(client.invoke, messages)
-        return res.content
-
-    elif provider == "openrouter":
-        if not OPENROUTER_API_KEY:
-            raise ValueError("OPENROUTER_API_KEY manquante.")
-        client = ChatOpenAI(
-            model=model_name,
-            temperature=0.1,
-            openai_api_key=OPENROUTER_API_KEY,
-            openai_api_base="https://openrouter.ai/api/v1",
-            max_tokens=max_tokens
-        )
-        res = await asyncio.to_thread(client.invoke, messages)
-        return res.content
-
-    raise ValueError(f"Fournisseur inconnu: {provider}")
-
-async def execute_llm(messages: List[Any]) -> str:
-    cfg = MODEL_CATALOG["AMAL_DG"]
-    try:
-        return await invoke_llm_provider(cfg['primary_provider'], cfg['primary_model'], messages, cfg['max_tokens'])
-    except Exception as err:
-        logging.warning(f"Fallback déclenché: {err}")
-        return await invoke_llm_provider(cfg['fallback_provider'], cfg['fallback_model'], messages, cfg['max_tokens'])
-
-# ==========================================
-# SYSTEM PROMPT & TOOLS
-# ==========================================
-SYSTEM_PROMPT = """Tu es AMAL-DG, Directrice Générale du Swarm.
-Réponds sous forme de JSON d'action :
-{"action": "git_delete_file", "action_input": {"file_path": "chemin/fichier.md"}}
-Ou répond directement si c'est une discussion textuelle."""
-
-def git_delete_file(file_path: str) -> str:
-    try:
-        safe_path = os.path.normpath(file_path).replace("\\", "/")
-        if not GITHUB_TOKEN or not GITHUB_REPO:
-            return f"Simulifation suppression local: {file_path}"
-
-        headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
-        api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{safe_path}"
-
-        with httpx.Client() as client:
-            get_resp = client.get(api_url, headers=headers)
-            if get_resp.status_code == 200:
-                sha = get_resp.json().get("sha")
-                payload = {"message": f"Chore: delete {safe_path}", "sha": sha, "branch": "main"}
-                del_resp = client.request("DELETE", api_url, json=payload, headers=headers)
-                if del_resp.status_code in [200, 202]:
-                    return f"SUCCÈS: {file_path} supprimé de GitHub."
-                return f"Échec suppression GitHub: {del_resp.status_code}"
-            return f"Fichier {file_path} non trouvé."
-    except Exception as e:
-        return f"Erreur: {str(e)}"
-
-TOOLS = {"git_delete_file": git_delete_file}
-
-# ==========================================
-# CORE SLACK PROCESSOR
-# ==========================================
-def send_slack_message(channel: str, text: str):
-    if not SLACK_TOKEN:
-        return
-    token = SLACK_TOKEN.strip()
-    url = "https://slack.com/api/chat.postMessage"
-    try:
-        with httpx.Client(timeout=15.0) as client:
-            client.post(
-                url,
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"},
-                json={"channel": channel, "text": text}
-            )
-    except Exception as e:
-        logging.error(f"Slack error: {e}")
-
-async def process_slack_mission_async(channel_id: str, user_prompt: str):
-    messages = [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=user_prompt)]
-    try:
-        response_text = await execute_llm(messages)
-        if "action" in response_text and "git_delete_file" in response_text:
-            try:
-                data = json.loads(response_text)
-                fn_input = data.get("action_input", {})
-                res = git_delete_file(**fn_input)
-                final_msg = f" Action exécutée : {res}"
-            except Exception:
-                final_msg = response_text
-        else:
-            final_msg = response_text
-    except Exception as e:
-        final_msg = f"⚠️ Erreur: {str(e)}"
-
-    send_slack_message(channel_id, final_msg)
