@@ -4,6 +4,7 @@ import json
 import base64
 import logging
 import asyncio
+import operator
 import subprocess
 from typing import TypedDict, Annotated, List, Union, Dict, Any
 from datetime import datetime
@@ -17,21 +18,10 @@ from langgraph.graph import StateGraph, END
 from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
 from supabase import create_client, Client
-from fpdf import FPDF
-
-try:
-    from firecrawl import FirecrawlApp
-except ImportError:
-    FirecrawlApp = None
-
-try:
-    from e2b_code_interpreter import CodeInterpreter
-except ImportError:
-    CodeInterpreter = None
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM-ENTERPRISE", version="11.0.0")
+app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM-ENTERPRISE", version="11.0.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -50,13 +40,10 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 SLACK_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
-FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
-E2B_API_KEY = os.getenv("E2B_API_KEY")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPOSITORY")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
-firecrawl_app = FirecrawlApp(api_key=FIRECRAWL_API_KEY) if FIRECRAWL_API_KEY and FirecrawlApp else None
 
 # ==========================================
 # CATALOGUE DE MODÈLES RÉSILIENTS
@@ -103,12 +90,10 @@ async def invoke_llm(provider: str, model: str, messages: List[Any], max_tokens:
 
 async def execute_pole_llm(pole_key: str, messages: List[Any]) -> str:
     cfg = MODEL_CATALOG.get(pole_key, MODEL_CATALOG["AMAL_DG"])
-    # Tentative Primary
     try:
         return await invoke_llm(cfg["primary_provider"], cfg["primary_model"], messages, cfg["max_tokens"])
     except Exception as err:
-        logging.warning(f"[{pole_key}] Échec Primary ({cfg['primary_model']}): {err}. Bascule sur le Fallback...")
-    # Tentative Fallback
+        logging.warning(f"[{pole_key}] Échec Primary ({cfg['primary_model']}): {err}. Bascule sur Fallback...")
     try:
         return await invoke_llm(cfg["fallback_provider"], cfg["fallback_model"], messages, cfg["max_tokens"])
     except Exception as fallback_err:
@@ -116,7 +101,7 @@ async def execute_pole_llm(pole_key: str, messages: List[Any]) -> str:
         return f"⚠️ Erreur critique du pôle {pole_key}: Services LLM indisponibles."
 
 # ==========================================
-# SYSTÈME DE PERMISSIONS & OUTILS AUTONOMES
+# OUTILS DE GESTION & PERMISSIONS
 # ==========================================
 def tavily_web_search(query: str) -> str:
     if not TAVILY_API_KEY: return "Erreur: TAVILY_API_KEY non configurée."
@@ -215,18 +200,18 @@ TOOLS_MAP = {
 }
 
 # ==========================================
-# SYSTEM PROMPT STRUCTURÉ AVEC ANTICIPATION DE BUGS
+# SYSTEM PROMPT STRUCTURÉ
 # ==========================================
 SYSTEM_PROMPT = """Tu es AMAL-DG, Directrice Générale et Orchestratrice Suprême du Swarm Agentique.
 Tu disposes d'une autonomie totale sur le dépôt GitHub et les outils d'exécution.
 
-PROTOCOLE DE DOUBLE VÉRIFICATION ET D'ANTICIPATION DES BUGS :
-1. Avant d'exécuter une action destructive ou de modification (ex: suppression de fichiers, écriture de code), vérifie par déduction logique si les prérequis sont réunis.
-2. Si une erreur survient lors de l'exécution d'un outil, analyse le message d'erreur retourné, corrige ton plan d'action de manière autonome et tente une alternative immédiatement.
-3. Réponds EXCLUSIVEMENT sous la forme d'un objet JSON d'action valide pour déclencher un outil :
+PROTOCOLE D'EXÉCUTION ET ANTICIPATION DE BUGS :
+1. Avant d'exécuter une action de suppression ou modification, évalue si l'opération est valide.
+2. Si un outil renvoie une erreur, analyse-la, ajuste l'action et réessaie de manière autonome.
+3. Réponds EXCLUSIVEMENT sous la forme d'un objet JSON d'action valide :
 {"action": "nom_outil", "action_input": {"param1": "valeur1"}}
-OU si tu as terminé ou réponds directement par du texte :
-{"message": "Ton rapport d'exécution ici"}
+OU si l'exécution est terminée :
+{"message": "Ton compte-rendu ici"}
 """
 
 # ==========================================
@@ -240,14 +225,12 @@ async def call_model_async(state: AgentState):
     content = await execute_pole_llm("AMAL_DG", full_messages)
     content = content.strip()
 
-    # Nettoyage des balises markdown si l'IA renvoie du JSON dans des blocs code
     if content.startswith("```"):
         lines = content.splitlines()
         if lines[0].startswith("```"): lines = lines[1:]
         if lines and lines[-1].startswith("```"): lines = lines[:-1]
         content = "\n".join(lines).strip()
 
-    # Détection et exécution sécurisée de l'action JSON
     if content.startswith("{") and "action" in content:
         try:
             parsed = json.loads(content)
@@ -257,13 +240,12 @@ async def call_model_async(state: AgentState):
             if action_name in TOOLS_MAP:
                 tool_fn = TOOLS_MAP[action_name]
                 tool_result = tool_fn(**action_input) if isinstance(action_input, dict) else tool_fn(action_input)
-                logging.info(f"Outil {action_name} exécuté avec succès: {tool_result}")
+                logging.info(f"Outil {action_name} exécuté: {tool_result}")
                 
-                # Double vérification / Feedback loop pour auto-correction
-                feedback_msg = HumanMessage(content=f"--- RÉSULTAT EXÉCUTION OUTIL [{action_name}] ---\n{tool_result}\n\nVérifie si l'opération a réussi ou si une correction est nécessaire.")
+                feedback_msg = HumanMessage(content=f"--- RÉSULTAT EXÉCUTION OUTIL [{action_name}] ---\n{tool_result}\n\nVérifie l'état final.")
                 return {"messages": [AIMessage(content=content), feedback_msg]}
         except Exception as parse_err:
-            logging.warning(f"Erreur de parsing/exécution de l'action JSON: {parse_err}")
+            logging.warning(f"Erreur parsing JSON action: {parse_err}")
 
     return {"messages": [AIMessage(content=content)]}
 
@@ -286,7 +268,7 @@ app_graph = workflow.compile()
 @app.get("/")
 @app.get("/health")
 def health_check():
-    return {"status": "ONLINE", "version": "11.0.0", "timestamp": str(datetime.utcnow())}
+    return {"status": "ONLINE", "version": "11.0.1", "timestamp": str(datetime.utcnow())}
 
 def send_slack_message(channel: str, text: str):
     if not SLACK_TOKEN: return
@@ -305,7 +287,7 @@ async def process_slack_mission_async(channel_id: str, user_prompt: str):
         final_state = await app_graph.ainvoke({"messages": [HumanMessage(content=user_prompt)]})
         final_message = final_state["messages"][-1].content
     except Exception as e:
-        final_message = f"⚠️ *Erreur Critique Moteur Amal-DG* : {str(e)}"
+        final_message = f"⚠️ *Erreur Moteur Amal-DG* : {str(e)}"
     send_slack_message(channel_id, final_message)
 
 @app.post("/slack/events")
