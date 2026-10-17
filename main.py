@@ -5,7 +5,7 @@ import base64
 import logging
 import asyncio
 import operator
-import subprocess
+import re
 from typing import TypedDict, Annotated, List, Union, Dict, Any
 from datetime import datetime
 
@@ -20,7 +20,7 @@ from supabase import create_client, Client
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="11.4.0")
+app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="11.5.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,9 +40,6 @@ GITHUB_REPO = os.getenv("GITHUB_REPOSITORY")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
-# ==========================================
-# MODEL CATALOG (OPENROUTER STABLE)
-# ==========================================
 MODEL_CATALOG = {
     "AMAL_DG": {
         "primary_provider": "openrouter",
@@ -80,7 +77,7 @@ async def execute_pole_llm(pole_key: str, messages: List[Any]) -> str:
         return f"⚠️ Erreur critique du pôle {pole_key}: Services LLM indisponibles."
 
 # ==========================================
-# OUTIL GIT DELETE MULTI-PARAMÈTRES (SANS BUG)
+# OUTIL GIT DELETE MULTI-PARAMÈTRES
 # ==========================================
 def git_delete_file(file_path: str = None, path: str = None, filepath: str = None, **kwargs) -> str:
     target_path = file_path or path or filepath
@@ -120,7 +117,7 @@ Tu disposes d'une autonomie totale sur le dépôt GitHub.
 
 PROTOCOLE D'EXÉCUTION :
 1. Pour supprimer un fichier, utilise l'outil `git_delete_file` en fournissant `"file_path"`.
-2. Réponds EXCLUSIVEMENT sous la forme d'un objet JSON d'action :
+2. Réponds EXCLUSIVEMENT avec un objet JSON d'action valide, sans texte avant ou après :
 {"action": "git_delete_file", "action_input": {"file_path": "chemin/du/fichier.md"}}
 OU si tu as terminé :
 {"message": "Nettoyage complété avec succès."}
@@ -129,20 +126,36 @@ OU si tu as terminé :
 class AgentState(TypedDict):
     messages: Annotated[List, operator.add]
 
+def extract_first_json(text: str) -> dict:
+    """ Extrait proprement le premier objet JSON valide du texte """
+    match = re.search(r'\{.*\}', text, re.DOTALL)
+    if match:
+        json_str = match.group(0)
+        # Gestion des JSON multiples collés
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            # Recherche du premier JSON équilibré
+            depth = 0
+            start_idx = None
+            for i, char in enumerate(text):
+                if char == '{':
+                    if depth == 0: start_idx = i
+                    depth += 1
+                elif char == '}':
+                    depth -= 1
+                    if depth == 0 and start_idx is not None:
+                        return json.loads(text[start_idx:i+1])
+    raise ValueError("Aucun JSON valide trouvé.")
+
 async def call_model_async(state: AgentState):
     full_messages = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"][-8:]
     content = await execute_pole_llm("AMAL_DG", full_messages)
     content = content.strip()
 
-    if content.startswith("```"):
-        lines = content.splitlines()
-        if lines[0].startswith("```"): lines = lines[1:]
-        if lines and lines[-1].startswith("```"): lines = lines[:-1]
-        content = "\n".join(lines).strip()
-
-    if content.startswith("{") and "action" in content:
+    if "{" in content and "action" in content:
         try:
-            parsed = json.loads(content)
+            parsed = extract_first_json(content)
             action_name = parsed.get("action")
             action_input = parsed.get("action_input", {})
             
@@ -174,29 +187,34 @@ app_graph = workflow.compile()
 @app.get("/")
 @app.get("/health")
 def health_check():
-    return {"status": "ONLINE", "version": "11.4.0", "timestamp": str(datetime.utcnow())}
+    return {"status": "ONLINE", "version": "11.5.0", "timestamp": str(datetime.utcnow())}
 
 # ==========================================
-# GESTION HYBRIDE DES MESSAGES SLACK (WEBHOOK & TOKEN)
+# GESTION HYBRIDE ET SÉCURISÉE DES MESSAGES SLACK
 # ==========================================
 def send_slack_message(channel: str, text: str):
-    if not SLACK_TOKEN: return
-    token = SLACK_TOKEN.strip()
+    if not SLACK_TOKEN: 
+        logging.error("SLACK_BOT_TOKEN non configuré.")
+        return
+        
+    raw_token = SLACK_TOKEN.strip()
     
-    # Si la variable contient une URL Webhook complète
-    if token.startswith("http://") or token.startswith("https://"):
-        target_url = token
+    # Nettoyage et vérification de l'URL / Token
+    if raw_token.startswith("http://") or raw_token.startswith("https://"):
+        target_url = raw_token
         headers = {"Content-Type": "application/json; charset=utf-8"}
         payload = {"text": text}
     else:
-        target_url = "[https://slack.com/api/chat.postMessage](https://slack.com/api/chat.postMessage)"
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}
+        target_url = "https://slack.com/api/chat.postMessage"
+        # Ajout du préfixe xoxb- si omis
+        token_auth = raw_token if raw_token.startswith("xoxb-") else f"xoxb-{raw_token}"
+        headers = {"Authorization": f"Bearer {token_auth}", "Content-Type": "application/json; charset=utf-8"}
         payload = {"channel": channel, "text": text}
 
     try:
         with httpx.Client(timeout=15.0) as client:
             resp = client.post(target_url, headers=headers, json=payload)
-            logging.info(f"Slack post status: {resp.status_code}")
+            logging.info(f"Slack response status: {resp.status_code}")
     except Exception as e:
         logging.error(f"Erreur Slack dispatch: {e}")
 
