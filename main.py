@@ -33,10 +33,9 @@ try:
 except ImportError:
     CodeInterpreter = None
 
-# Configuration des logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="10.2.1")
+app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="10.6.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,11 +45,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configuration API Keys (Render Environment)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -66,43 +62,43 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and
 firecrawl_app = FirecrawlApp(api_key=FIRECRAWL_API_KEY) if FIRECRAWL_API_KEY and FirecrawlApp else None
 
 # ==========================================
-# MATRICE DES MODÈLES & QUOTAS ÉTENDUS (> 4000)
+# MATRICE MODÈLES : LLAMA 8B INSTANT (HAUTE DISPONIBILITÉ)
 # ==========================================
 MODEL_CATALOG = {
     "AMAL_DG": {
-        "primary_provider": "huggingface",
-        "primary_model": "openai/gpt-oss-safeguard-120b",
-        "fallback_provider": "google",
-        "fallback_model": "gemini-1.5-flash-latest",
-        "max_tokens": 8192
+        "primary_provider": "groq",
+        "primary_model": "llama-3.1-8b-instant",
+        "fallback_provider": "openrouter",
+        "fallback_model": "google/gemma-2-9b-it:free",
+        "max_tokens": 4096
     },
     "TECH_CODE": {
-        "primary_provider": "huggingface",
-        "primary_model": "Qwen/Qwen2.5-Coder-32B-Instruct",
+        "primary_provider": "groq",
+        "primary_model": "llama-3.1-8b-instant",
         "fallback_provider": "openrouter",
-        "fallback_model": "cohere/north-mini-code:free",
-        "max_tokens": 8192
+        "fallback_model": "qwen/qwen-2.5-coder-32b-instruct:free",
+        "max_tokens": 4096
     },
     "LEGAL_TAL": {
-        "primary_provider": "huggingface",
-        "primary_model": "deepseek-ai/DeepSeek-R1-Distill-Qwen-33B",
+        "primary_provider": "groq",
+        "primary_model": "llama-3.1-8b-instant",
         "fallback_provider": "openrouter",
-        "fallback_model": "google/gemma-4-31b:free",
-        "max_tokens": 8192
+        "fallback_model": "google/gemma-2-9b-it:free",
+        "max_tokens": 4096
     },
     "STRATEGY_GLM": {
-        "primary_provider": "huggingface",
-        "primary_model": "zai-org/GLM-4.7-Flash",
-        "fallback_provider": "groq",
-        "fallback_model": "llama-3.3-70b-versatile",
-        "max_tokens": 8192
+        "primary_provider": "groq",
+        "primary_model": "llama-3.1-8b-instant",
+        "fallback_provider": "openrouter",
+        "fallback_model": "meta-llama/llama-3.1-8b-instruct:free",
+        "max_tokens": 4096
     },
     "WORKERS": {
         "primary_provider": "groq",
         "primary_model": "llama-3.1-8b-instant",
-        "fallback_provider": "huggingface",
-        "fallback_model": "google/gemma-3-1b-it",
-        "max_tokens": 4096
+        "fallback_provider": "openrouter",
+        "fallback_model": "meta-llama/llama-3.1-8b-instruct:free",
+        "max_tokens": 2048
     }
 }
 
@@ -122,9 +118,9 @@ def record_log(pole: str, status: str, model: str, details: str, project_id: str
         EXECUTION_LOGS.pop()
 
 # ==========================================
-# MOTEUR MULTI-PROVIDERS & CIRCUIT BREAKER
+# MOTEUR MULTI-PROVIDERS
 # ==========================================
-async def invoke_llm_provider(provider: str, model_name: str, messages: List[Any], max_tokens: int = 8192) -> str:
+async def invoke_llm_provider(provider: str, model_name: str, messages: List[Any], max_tokens: int = 4096) -> str:
     timeout_seconds = 30.0
     
     if provider == "groq":
@@ -147,53 +143,13 @@ async def invoke_llm_provider(provider: str, model_name: str, messages: List[Any
         res = await asyncio.to_thread(client.invoke, messages)
         return res.content
 
-    elif provider == "huggingface":
-        if not HUGGINGFACE_API_KEY:
-            raise ValueError("HUGGINGFACE_API_KEY manquante.")
-        url = f"https://api-inference.huggingface.co/models/{model_name}"
-        headers = {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}", "Content-Type": "application/json"}
-        prompt_text = "\n".join([f"{m.type}: {m.content}" for m in messages])
-        payload = {"inputs": prompt_text, "parameters": {"max_new_tokens": max_tokens, "temperature": 0.1}}
-        
-        async with httpx.AsyncClient(timeout=timeout_seconds) as async_client:
-            resp = await async_client.post(url, json=payload, headers=headers)
-            if resp.status_code == 200:
-                data = resp.json()
-                if isinstance(data, list) and len(data) > 0:
-                    return data[0].get("generated_text", str(data))
-                return str(data)
-            else:
-                raise RuntimeError(f"Hugging Face HTTP {resp.status_code}: {resp.text}")
-
-    elif provider == "google":
-        if not GEMINI_API_KEY:
-            raise ValueError("GEMINI_API_KEY manquante.")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
-        headers = {"Content-Type": "application/json"}
-        contents = []
-        for m in messages:
-            role = "user" if m.type in ["human", "system"] else "model"
-            contents.append({"role": role, "parts": [{"text": m.content}]})
-        payload = {"contents": contents, "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.1}}
-        
-        async with httpx.AsyncClient(timeout=timeout_seconds) as async_client:
-            resp = await async_client.post(url, json=payload, headers=headers)
-            if resp.status_code == 200:
-                data = resp.json()
-                try:
-                    return data["candidates"][0]["content"]["parts"][0]["text"]
-                except KeyError:
-                    return str(data)
-            else:
-                raise RuntimeError(f"Google AI HTTP {resp.status_code}: {resp.text}")
-
     else:
         raise ValueError(f"Fournisseur inconnu: {provider}")
 
 
 async def execute_pole_llm(pole_key: str, messages: List[Any]) -> str:
     cfg = MODEL_CATALOG.get(pole_key, MODEL_CATALOG["WORKERS"])
-    max_tokens = cfg.get("max_tokens", 8192)
+    max_tokens = cfg.get("max_tokens", 4096)
     
     # 1. Primary
     try:
@@ -257,14 +213,14 @@ def tavily_web_search(query: str) -> str:
     try:
         with httpx.Client(timeout=15.0) as client:
             res = client.post("https://api.tavily.com/search", json={"api_key": TAVILY_API_KEY, "query": query, "search_depth": "advanced"}, timeout=15.0)
-            return res.json().get("answer", str(res.json().get("results", [])))[:2000]
+            return res.json().get("answer", str(res.json().get("results", [])))[:1500]
     except Exception as e:
         return f"Erreur Tavily Search: {str(e)}"
 
 def firecrawl_scrape_url(url: str) -> str:
     if firecrawl_app:
         try:
-            return firecrawl_app.scrape_url(url, params={'formats': ['markdown']}).get('markdown', '')[:2000]
+            return firecrawl_app.scrape_url(url, params={'formats': ['markdown']}).get('markdown', '')[:1500]
         except Exception as e:
             return f"Erreur Firecrawl Scrape: {str(e)}"
     return "Firecrawl non disponible."
@@ -283,7 +239,7 @@ def execute_system_command(command: str) -> str:
     try:
         result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
         output = result.stdout if result.stdout else result.stderr
-        return output[:2000] if output else "Commande exécutée avec succès."
+        return output[:1500] if output else "Commande exécutée avec succès."
     except Exception as e:
         return f"Erreur exécution système: {str(e)}"
 
@@ -394,7 +350,7 @@ def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "
     if save_to_file and not result_text.startswith("⚠️"):
         git_commit_and_push(save_to_file, f"Feat({team}/{project_id}): Deliverable", result_text)
         
-    return result_text[:2500]
+    return result_text[:2000]
 
 def compile_markdowns_to_pdf(folder_path: str = "docs", output_pdf_path: str = "Master_Report.pdf") -> str:
     try:
@@ -446,7 +402,7 @@ def execute_action_payload(action_item: dict) -> str:
 
 async def call_model_async(state: AgentState):
     system_ctx = SystemMessage(content=SYSTEM_PROMPT)
-    full_messages = [system_ctx] + state["messages"][-10:]
+    full_messages = [system_ctx] + state["messages"][-8:]
     
     content = await execute_pole_llm("AMAL_DG", full_messages)
     content = content.strip()
@@ -519,7 +475,6 @@ def send_slack_message(channel: str, text: str):
         logging.error("Format de token Slack invalide.")
         return
 
-    # URL corrigée (sans balises markdown)
     url = "[https://slack.com/api/chat.postMessage](https://slack.com/api/chat.postMessage)"
     try:
         with httpx.Client(timeout=15.0) as client:
@@ -533,41 +488,4 @@ def send_slack_message(channel: str, text: str):
         logging.error(f"Erreur envoi Slack: {e}")
 
 async def process_slack_mission_async(channel_id: str, user_prompt: str):
-    record_log("AMAL_DG", "STARTED", "openai/gpt-oss-safeguard-120b", f"Slack Mission: {user_prompt[:50]}...")
-    try:
-        final_state = await app_graph.ainvoke({"messages": [HumanMessage(content=user_prompt)]})
-        final_message = final_state["messages"][-1].content
-    except Exception as e:
-        final_message = f"⚠️ *Erreur Moteur Amal-DG* : {str(e)}"
-
-    send_slack_message(channel_id, final_message)
-
-@app.post("/slack/events")
-@app.post("/slack/events/")
-async def slack_events(request: Request, background_tasks: BackgroundTasks):
-    data = await request.json()
-    if data.get("type") == "url_verification": 
-        return {"challenge": data.get("challenge")}
-        
-    event = data.get("event", {})
-    if event.get("type") in ["message", "app_mention"] and not event.get("bot_id"):
-        channel_id = event.get("channel")
-        user_prompt = event.get("text")
-        if channel_id and user_prompt:
-            background_tasks.add_task(process_slack_mission_async, channel_id, user_prompt)
-
-    return Response(status_code=200)
-
-@app.get("/api/dashboard-data")
-def get_dashboard_data():
-    return {
-        "server_status": "ONLINE",
-        "version": "10.2.1",
-        "providers_integrated": ["Groq", "OpenRouter", "HuggingFace", "GoogleAI"],
-        "models_catalog": MODEL_CATALOG,
-        "execution_history": EXECUTION_LOGS
-    }
-
-@app.get("/health")
-def health_check():
-    return {"status": "ONLINE", "version": "10.2.1"}
+    record_log("AMAL_DG", "STARTED", "llama-3.1-8b-instant", f"Slack Mission: {user_prompt[:50]}...")
