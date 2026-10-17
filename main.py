@@ -36,7 +36,7 @@ except ImportError:
 # Configuration des logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="9.0.0")
+app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="10.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,7 +46,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configuration API Keys
+# Configuration API Keys (Render Environment)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -66,7 +66,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and
 firecrawl_app = FirecrawlApp(api_key=FIRECRAWL_API_KEY) if FIRECRAWL_API_KEY and FirecrawlApp else None
 
 # ==========================================
-# GESTION DES MODÈLES & MATRICE DE ROUTAGE (100% GRATUITS)
+# MATRICE DES MODÈLES & ROUTAGE RESILIENT 0$
 # ==========================================
 MODEL_CATALOG = {
     "AMAL_DG": {
@@ -122,11 +122,10 @@ def record_log(pole: str, status: str, model: str, details: str, project_id: str
         EXECUTION_LOGS.pop()
 
 # ==========================================
-# MOTEUR DE CALL API MULTI-PROVIDERS & CIRCUIT BREAKER
+# MOTEUR MULTI-PROVIDERS & CIRCUIT BREAKER ANTI-SATURATION
 # ==========================================
 async def invoke_llm_provider(provider: str, model_name: str, messages: List[Any], max_tokens: int = 4096) -> str:
-    """Invoque un modèle spécifique avec un timeout et une gestion stricte des erreurs d'API."""
-    timeout_seconds = 20.0
+    timeout_seconds = 25.0
     
     if provider == "groq":
         if not GROQ_API_KEY:
@@ -138,7 +137,6 @@ async def invoke_llm_provider(provider: str, model_name: str, messages: List[Any
     elif provider == "openrouter":
         if not OPENROUTER_API_KEY:
             raise ValueError("OPENROUTER_API_KEY manquante.")
-        # Sécurité anti-402 : Plafond strict à max_tokens=4096
         safe_max_tokens = min(max_tokens, 4096)
         client = ChatOpenAI(
             model=model_name,
@@ -195,52 +193,43 @@ async def invoke_llm_provider(provider: str, model_name: str, messages: List[Any
 
 
 async def execute_pole_llm(pole_key: str, messages: List[Any]) -> str:
-    """Exécute la requête pour un pôle donné avec basculement automatique (Primary -> Fallback)."""
     cfg = MODEL_CATALOG.get(pole_key, MODEL_CATALOG["WORKERS"])
     max_tokens = cfg.get("max_tokens", 4096)
     
-    # 1. Tentative sur le modèle Principal
+    # 1. Primary
     try:
-        logging.info(f"[{pole_key}] Appel du modèle Principal: {cfg['primary_provider']} / {cfg['primary_model']}")
+        logging.info(f"[{pole_key}] Primary: {cfg['primary_provider']} / {cfg['primary_model']}")
         result = await invoke_llm_provider(cfg['primary_provider'], cfg['primary_model'], messages, max_tokens)
         record_log(pole_key, "SUCCESS", f"{cfg['primary_provider']}/{cfg['primary_model']}", "Exécution réussie")
         return result
     except Exception as err:
-        err_msg = str(err)
-        logging.warning(f"[{pole_key}] ÉCHEC Primary ({cfg['primary_model']}): {err_msg}. Basculement sur Fallback...")
-        record_log(pole_key, "FALLBACK_TRIGGERED", f"{cfg['primary_provider']}/{cfg['primary_model']}", f"Erreur: {err_msg[:100]}")
+        logging.warning(f"[{pole_key}] ECHEC Primary ({cfg['primary_model']}): {err}. Fallback...")
+        record_log(pole_key, "FALLBACK_TRIGGERED", f"{cfg['primary_provider']}/{cfg['primary_model']}", f"Erreur: {str(err)[:100]}")
 
-    # 2. Basculement sur le modèle Fallback
+    # 2. Fallback (Google Gemini ou OpenRouter)
     try:
-        logging.info(f"[{pole_key}] Appel du modèle Secours: {cfg['fallback_provider']} / {cfg['fallback_model']}")
+        logging.info(f"[{pole_key}] Fallback: {cfg['fallback_provider']} / {cfg['fallback_model']}")
         result = await invoke_llm_provider(cfg['fallback_provider'], cfg['fallback_model'], messages, max_tokens)
         record_log(pole_key, "SUCCESS_FALLBACK", f"{cfg['fallback_provider']}/{cfg['fallback_model']}", "Fallback exécuté avec succès")
         return result
     except Exception as fallback_err:
-        logging.error(f"[{pole_key}] ÉCHEC TOTAL (Primary & Fallback): {fallback_err}")
+        logging.error(f"[{pole_key}] ECHEC CRITIQUE: {fallback_err}")
         record_log(pole_key, "FAILED_ALL", f"{cfg['fallback_provider']}/{cfg['fallback_model']}", f"Erreur critique: {str(fallback_err)[:100]}")
-        return f"⚠️ Erreur d'exécution sur le pôle {pole_key}: Les serveurs sont momentanément indisponibles."
+        return f"⚠️ Erreur d'exécution sur le pôle {pole_key}: Service temporairement indisponible."
 
 # ==========================================
-# PROMPT SYSTÈME AGENTIQUE
+# SYSTEM PROMPT EXECUTIVE (ALIGNÉ SUR DG_SYSTEME.MD v10.0)
 # ==========================================
-SYSTEM_PROMPT = """Tu es AMAL-DG, Directrice Générale, Architecte IA et Orchestratrice Suprême du Swarm Agentique (79 agents).
+SYSTEM_PROMPT = """Tu es AMAL-DG, Directrice Générale, Architecte IA et Orchestratrice Suprême du Swarm Agentique.
 
-TES POSTURES EXEC :
-1. SILICON VALLEY CEO MINDSET : Biais vers l'action immédiate.
-2. AGILE & SCRUM MASTER : Organisation par sprints, gestion de priorités et livrables concrets.
-3. RIGUEUR & STANDARDS : Code propre, zéro hallucination, validation matérielle des fichiers.
+CHARTE D'EXÉCUTION (DG_SYSTEME.MD v10.0) :
+1. RESPECT ABSOLU DE DG_SYSTEME.MD : Tu appliques les règles et la posture du fichier `dg_systeme.md`. Tu peux le lire via `read_github_file("dg_systeme.md")`.
+2. SILICON VALLEY CEO MINDSET : Execution Bias absolu, zéro blabla, orientation livrables réels.
+3. ACCÈS WEB TEMPS RÉEL (ANTI-VASE CLOS) : Interdiction formelle de te fier uniquement à ta mémoire interne. Tu DOIS utiliser `tavily_web_search` ou `firecrawl_scrape_url` pour le pôle juridique (TAL/Québec), la veille et la tech.
+4. DÉLÉGATION EXTENSIBLE : Tu délègues les sous-missions aux pôles via `delegate_to_subagent`.
 
-DÉLÉGATION ET DÉPLOIEMENT DES PÔLES :
-Tu as la charge de déployer et de superviser les 5 pôles opérationnels de l'usine :
-- Pôle Direction Générale & Management (AMAL_DG)
-- Pôle Technique & Code (TECH_CODE)
-- Pôle Juridique & Processus TAL (LEGAL_TAL)
-- Pôle Stratégie & Contenu (STRATEGY_GLM)
-- Pôle Workers d'Exécution (WORKERS)
-
-FORMAT D'EXÉCUTION DES ACTIONS (OBLIGATOIRE) :
-Pour exécuter une action technique (fichier, git, code, sous-agent), répond EXCLUSIVEMENT sous forme d'objet JSON :
+FORMAT D'EXÉCUTION DES ACTIONS (EXCLUSIF) :
+Réponds EXCLUSIVEMENT sous forme d'objet JSON d'action :
 {"action": "nom_outil", "action_input": {...}}
 OU pour plusieurs actions :
 [
@@ -250,10 +239,10 @@ OU pour plusieurs actions :
 
 Outils disponibles :
 - delegate_to_subagent
-- execute_python_code_e2b
-- execute_system_command
 - tavily_web_search
 - firecrawl_scrape_url
+- execute_python_code_e2b
+- execute_system_command
 - git_commit_and_push
 - read_github_file
 - git_delete_file
@@ -261,8 +250,26 @@ Outils disponibles :
 """
 
 # ==========================================
-# OUTILS DE L'USINE AGENTIQUE
+# OUTILS PHYSIQUES DU SWARM
 # ==========================================
+def tavily_web_search(query: str) -> str:
+    if not TAVILY_API_KEY: 
+        return "Erreur: TAVILY_API_KEY non configurée."
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            res = client.post("https://api.tavily.com/search", json={"api_key": TAVILY_API_KEY, "query": query, "search_depth": "advanced"}, timeout=15.0)
+            return res.json().get("answer", str(res.json().get("results", [])))[:1500]
+    except Exception as e:
+        return f"Erreur Tavily Search: {str(e)}"
+
+def firecrawl_scrape_url(url: str) -> str:
+    if firecrawl_app:
+        try:
+            return firecrawl_app.scrape_url(url, params={'formats': ['markdown']}).get('markdown', '')[:1500]
+        except Exception as e:
+            return f"Erreur Firecrawl Scrape: {str(e)}"
+    return "Firecrawl non disponible."
+
 def execute_python_code_e2b(code: str) -> str:
     if not E2B_API_KEY or not CodeInterpreter:
         return "E2B non disponible."
@@ -277,7 +284,7 @@ def execute_system_command(command: str) -> str:
     try:
         result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
         output = result.stdout if result.stdout else result.stderr
-        return output[:2000] if output else "Commande exécutée avec succès."
+        return output[:1500] if output else "Commande exécutée avec succès."
     except Exception as e:
         return f"Erreur exécution système: {str(e)}"
 
@@ -354,37 +361,42 @@ def git_delete_file(file_path: str, commit_message: str = "Chore: Delete obsolet
     except Exception as e:
         return f"ERREUR SUPPRESSION GITHUB: {str(e)}"
 
-def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "", priority: str = "MEDIUM", project_id: str = "GLOBAL") -> str:
-    """Délègue une tâche à un pôle d'agent spécifique avec gestion de priorité."""
-    pole_map = {
-        "tech": "TECH_CODE",
-        "code": "TECH_CODE",
-        "legal": "LEGAL_TAL",
-        "juridique": "LEGAL_TAL",
-        "strategy": "STRATEGY_GLM",
-        "contenu": "STRATEGY_GLM",
-        "worker": "WORKERS"
-    }
-    pole_key = pole_map.get(team.lower(), "WORKERS")
+def delegate_to_subagent(team: str, task_description: str, save_to_file: str = "", priority: str = "MEDIUM", search_query: str = "", project_id: str = "GLOBAL") -> str:
+    """Délégation universelle avec intégration temps réel et gestion anti-saturation."""
+    team_lower = team.lower()
+    
+    live_context = ""
+    if search_query or any(k in team_lower for k in ["legal", "juridique", "tal", "veille", "tech", "market"]):
+        query_to_run = search_query if search_query else f"actualités juridiques et mises à jour {team} {task_description[:50]}"
+        live_context = f"\n\n--- DATA WEB TEMPS RÉEL ---\n" + tavily_web_search(query_to_run)
+
+    if any(k in team_lower for k in ["tech", "code", "dev", "frontend", "backend", "devops"]):
+        pole_key = "TECH_CODE"
+    elif any(k in team_lower for k in ["legal", "juridique", "tal", "conformite"]):
+        pole_key = "LEGAL_TAL"
+    elif any(k in team_lower for k in ["strategy", "strategie", "contenu", "marketing", "veille"]):
+        pole_key = "STRATEGY_GLM"
+    else:
+        pole_key = "WORKERS"
     
     prompt_msg = [
-        SystemMessage(content=f"Tu es l'agent sous-spécialisé du pôle '{pole_key}' (Projet: {project_id}, Priorité: {priority}). Respecte les standards de Clean Code et de livraison sans hallucination."),
+        SystemMessage(content=f"Tu es l'agent sous-spécialisé du pôle '{team.upper()}' (Priorité: {priority}). Sois concis et précis. Zéro hallucination.{live_context}"),
         HumanMessage(content=task_description)
     ]
     
-    # Exécution asynchrone synchrone dans le thread
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
+        future = asyncio.run_coroutine_threadsafe(execute_pole_llm(pole_key, prompt_msg), loop)
+        result_text = future.result(timeout=30.0)
     except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    result_text = loop.run_until_complete(execute_pole_llm(pole_key, prompt_msg))
+        result_text = asyncio.run(execute_pole_llm(pole_key, prompt_msg))
+    except Exception as ex:
+        result_text = f"Erreur exécution sous-agent {team}: {str(ex)}"
     
     if save_to_file and not result_text.startswith("⚠️"):
-        git_commit_and_push(save_to_file, f"Feat({pole_key}/{project_id}): Deliverable", result_text)
+        git_commit_and_push(save_to_file, f"Feat({team}/{project_id}): Deliverable", result_text)
         
-    return result_text[:2000]
+    return result_text[:1500]
 
 def compile_markdowns_to_pdf(folder_path: str = "docs", output_pdf_path: str = "Master_Report.pdf") -> str:
     try:
@@ -405,33 +417,16 @@ def compile_markdowns_to_pdf(folder_path: str = "docs", output_pdf_path: str = "
     except Exception as e:
         return f"Erreur FPDF: {str(e)}"
 
-def tavily_web_search(query: str) -> str:
-    if not TAVILY_API_KEY: return "Pas de clé Tavily."
-    try:
-        with httpx.Client() as client:
-            res = client.post("https://api.tavily.com/search", json={"api_key": TAVILY_API_KEY, "query": query}, timeout=10.0)
-            return res.json().get("answer", "Aucun résultat.")[:1200]
-    except Exception as e:
-        return f"Erreur Tavily: {str(e)}"
-
-def firecrawl_scrape_url(url: str) -> str:
-    if firecrawl_app:
-        try:
-            return firecrawl_app.scrape_url(url, params={'formats': ['markdown']}).get('markdown', '')[:1500]
-        except Exception as e:
-            return f"Erreur Firecrawl: {str(e)}"
-    return "Firecrawl non configuré."
-
 TOOLS_MAP = {
     "delegate_to_subagent": delegate_to_subagent,
+    "tavily_web_search": tavily_web_search,
+    "firecrawl_scrape_url": firecrawl_scrape_url,
     "execute_python_code_e2b": execute_python_code_e2b,
     "execute_system_command": execute_system_command,
     "read_github_file": read_github_file,
     "git_commit_and_push": git_commit_and_push,
     "git_delete_file": git_delete_file,
-    "compile_markdowns_to_pdf": compile_markdowns_to_pdf,
-    "tavily_web_search": tavily_web_search,
-    "firecrawl_scrape_url": firecrawl_scrape_url
+    "compile_markdowns_to_pdf": compile_markdowns_to_pdf
 }
 
 class AgentState(TypedDict):
@@ -453,20 +448,18 @@ def execute_action_payload(action_item: dict) -> str:
 
 async def call_model_async(state: AgentState):
     system_ctx = SystemMessage(content=SYSTEM_PROMPT)
-    full_messages = [system_ctx] + state["messages"][-10:]
+    # STRATÉGIE WINDOWED CONTEXT : Tronquage strict à 8 messages max pour éliminer la saturation de context
+    full_messages = [system_ctx] + state["messages"][-8:]
     
-    # Appel d'Amal DG via le routeur multi-providers
     content = await execute_pole_llm("AMAL_DG", full_messages)
     content = content.strip()
     
-    # Nettoyage des balises markdown de code JSON
     if content.startswith("```"):
         lines = content.splitlines()
         if lines[0].startswith("```"): lines = lines[1:]
         if lines and lines[-1].startswith("```"): lines = lines[:-1]
         content = "\n".join(lines).strip()
 
-    # Détection et parsing automatique des actions JSON
     if (content.startswith("{") or content.startswith("[")) and "action" in content:
         try:
             parsed_json = json.loads(content)
@@ -571,7 +564,7 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
 def get_dashboard_data():
     return {
         "server_status": "ONLINE",
-        "version": "9.0.0",
+        "version": "10.0.0",
         "providers_integrated": ["Groq", "OpenRouter", "HuggingFace", "GoogleAI"],
         "models_catalog": MODEL_CATALOG,
         "execution_history": EXECUTION_LOGS
@@ -579,4 +572,4 @@ def get_dashboard_data():
 
 @app.get("/health")
 def health_check():
-    return {"status": "ONLINE", "version": "9.0.0"}
+    return {"status": "ONLINE", "version": "10.0.0"}
