@@ -15,13 +15,12 @@ import httpx
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langgraph.graph import StateGraph, END
-from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
 from supabase import create_client, Client
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM-ENTERPRISE", version="11.1.0")
+app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="11.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -31,7 +30,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -43,44 +41,45 @@ GITHUB_REPO = os.getenv("GITHUB_REPOSITORY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
 # ==========================================
-# MODEL CATALOG (EXACT API SLUGS)
+# MODEL CATALOG (OPENROUTER STABLE ENDPOINTS)
 # ==========================================
 MODEL_CATALOG = {
     "AMAL_DG": {
-        "primary_provider": "groq",
-        "primary_model": "llama3-8b-8192",
+        "primary_provider": "openrouter",
+        "primary_model": "openai/gpt-4o-mini",
         "fallback_provider": "openrouter",
-        "fallback_model": "meta-llama/llama-3.1-8b-instruct",
+        "fallback_model": "meta-llama/llama-3.3-70b-instruct:free",
         "max_tokens": 4096
     },
     "TECH_CODE": {
-        "primary_provider": "groq",
-        "primary_model": "llama3-8b-8192",
+        "primary_provider": "openrouter",
+        "primary_model": "openai/gpt-4o-mini",
         "fallback_provider": "openrouter",
-        "fallback_model": "qwen/qwen-2.5-coder-32b-instruct",
+        "fallback_model": "qwen/qwen-2.5-coder-32b-instruct:free",
         "max_tokens": 4096
     },
     "LEGAL_TAL": {
-        "primary_provider": "groq",
-        "primary_model": "llama3-8b-8192",
+        "primary_provider": "openrouter",
+        "primary_model": "openai/gpt-4o-mini",
         "fallback_provider": "openrouter",
-        "fallback_model": "meta-llama/llama-3.1-8b-instruct",
+        "fallback_model": "meta-llama/llama-3.3-70b-instruct:free",
         "max_tokens": 4096
     }
 }
 
 async def invoke_llm(provider: str, model: str, messages: List[Any], max_tokens: int = 4096) -> str:
-    if provider == "groq":
-        if not GROQ_API_KEY: raise ValueError("GROQ_API_KEY manquante.")
-        client = ChatGroq(model=model, temperature=0.1, groq_api_key=GROQ_API_KEY, max_tokens=max_tokens)
-        res = await asyncio.to_thread(client.invoke, messages)
-        return res.content
-    elif provider == "openrouter":
-        if not OPENROUTER_API_KEY: raise ValueError("OPENROUTER_API_KEY manquante.")
-        client = ChatOpenAI(model=model, temperature=0.1, openai_api_key=OPENROUTER_API_KEY, openai_api_base="https://openrouter.ai/api/v1", max_tokens=max_tokens)
-        res = await asyncio.to_thread(client.invoke, messages)
-        return res.content
-    raise ValueError(f"Provider inconnu: {provider}")
+    if not OPENROUTER_API_KEY: 
+        raise ValueError("OPENROUTER_API_KEY manquante.")
+        
+    client = ChatOpenAI(
+        model=model, 
+        temperature=0.1, 
+        openai_api_key=OPENROUTER_API_KEY, 
+        openai_api_base="https://openrouter.ai/api/v1", 
+        max_tokens=max_tokens
+    )
+    res = await asyncio.to_thread(client.invoke, messages)
+    return res.content
 
 async def execute_pole_llm(pole_key: str, messages: List[Any]) -> str:
     cfg = MODEL_CATALOG.get(pole_key, MODEL_CATALOG["AMAL_DG"])
@@ -95,7 +94,7 @@ async def execute_pole_llm(pole_key: str, messages: List[Any]) -> str:
         return f"⚠️ Erreur critique du pôle {pole_key}: Services LLM indisponibles."
 
 # ==========================================
-# GITHUB & SEARCH TOOLS
+# OUTILS DE GESTION GITHUB & RECHERCHE
 # ==========================================
 def tavily_web_search(query: str) -> str:
     if not TAVILY_API_KEY: return "Erreur: TAVILY_API_KEY non configurée."
@@ -253,7 +252,7 @@ app_graph = workflow.compile()
 @app.get("/")
 @app.get("/health")
 def health_check():
-    return {"status": "ONLINE", "version": "11.1.0", "timestamp": str(datetime.utcnow())}
+    return {"status": "ONLINE", "version": "11.3.0", "timestamp": str(datetime.utcnow())}
 
 def send_slack_message(channel: str, text: str):
     if not SLACK_TOKEN: 
@@ -268,7 +267,7 @@ def send_slack_message(channel: str, text: str):
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"},
                 json={"channel": channel, "text": text}
             )
-            logging.info(f"Slack postMessage status: {resp.status_code}")
+            logging.info(f"Slack response status: {resp.status_code}")
     except Exception as e:
         logging.error(f"Erreur Slack dispatch: {e}")
 
