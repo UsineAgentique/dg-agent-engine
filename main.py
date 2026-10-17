@@ -20,7 +20,7 @@ from supabase import create_client, Client
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="11.3.0")
+app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="11.4.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -41,24 +41,10 @@ GITHUB_REPO = os.getenv("GITHUB_REPOSITORY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
 # ==========================================
-# MODEL CATALOG (OPENROUTER STABLE ENDPOINTS)
+# MODEL CATALOG (OPENROUTER STABLE)
 # ==========================================
 MODEL_CATALOG = {
     "AMAL_DG": {
-        "primary_provider": "openrouter",
-        "primary_model": "openai/gpt-4o-mini",
-        "fallback_provider": "openrouter",
-        "fallback_model": "meta-llama/llama-3.3-70b-instruct:free",
-        "max_tokens": 4096
-    },
-    "TECH_CODE": {
-        "primary_provider": "openrouter",
-        "primary_model": "openai/gpt-4o-mini",
-        "fallback_provider": "openrouter",
-        "fallback_model": "qwen/qwen-2.5-coder-32b-instruct:free",
-        "max_tokens": 4096
-    },
-    "LEGAL_TAL": {
         "primary_provider": "openrouter",
         "primary_model": "openai/gpt-4o-mini",
         "fallback_provider": "openrouter",
@@ -86,7 +72,7 @@ async def execute_pole_llm(pole_key: str, messages: List[Any]) -> str:
     try:
         return await invoke_llm(cfg["primary_provider"], cfg["primary_model"], messages, cfg["max_tokens"])
     except Exception as err:
-        logging.warning(f"[{pole_key}] Échec Primary ({cfg['primary_model']}): {err}. Bascule sur Fallback...")
+        logging.warning(f"[{pole_key}] Échec Primary ({cfg['primary_model']}): {err}. Bascule Fallback...")
     try:
         return await invoke_llm(cfg["fallback_provider"], cfg["fallback_model"], messages, cfg["max_tokens"])
     except Exception as fallback_err:
@@ -94,66 +80,21 @@ async def execute_pole_llm(pole_key: str, messages: List[Any]) -> str:
         return f"⚠️ Erreur critique du pôle {pole_key}: Services LLM indisponibles."
 
 # ==========================================
-# OUTILS DE GESTION GITHUB & RECHERCHE
+# OUTIL GIT DELETE MULTI-PARAMÈTRES (SANS BUG)
 # ==========================================
-def tavily_web_search(query: str) -> str:
-    if not TAVILY_API_KEY: return "Erreur: TAVILY_API_KEY non configurée."
-    try:
-        with httpx.Client(timeout=15.0) as client:
-            res = client.post("https://api.tavily.com/search", json={"api_key": TAVILY_API_KEY, "query": query, "search_depth": "advanced"})
-            return str(res.json().get("results", []))[:2000]
-    except Exception as e:
-        return f"Erreur Tavily: {str(e)}"
-
-def read_github_file(file_path: str) -> str:
-    try:
-        if not GITHUB_TOKEN or not GITHUB_REPO:
-            if os.path.exists(file_path):
-                with open(file_path, "r", encoding="utf-8") as f: return f.read()
-            return f"Fichier {file_path} introuvable."
-        headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
-        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{file_path}"
-        with httpx.Client() as client:
-            resp = client.get(url, headers=headers)
-            if resp.status_code == 200:
-                return base64.b64decode(resp.json().get("content", "")).decode("utf-8")
-            return f"Fichier introuvable sur GitHub ({resp.status_code})."
-    except Exception as e:
-        return f"Erreur GitHub Read: {str(e)}"
-
-def git_commit_and_push(file_path: str, commit_message: str, content: str) -> str:
-    try:
-        safe_path = os.path.normpath(file_path).replace("\\", "/")
-        os.makedirs(os.path.dirname(safe_path) or ".", exist_ok=True)
-        with open(safe_path, "w", encoding="utf-8") as f: f.write(content)
+def git_delete_file(file_path: str = None, path: str = None, filepath: str = None, **kwargs) -> str:
+    target_path = file_path or path or filepath
+    if not target_path:
+        return "Erreur: Aucun chemin de fichier fourni."
         
-        if not GITHUB_TOKEN or not GITHUB_REPO:
-            return f"Fichier {file_path} sauvegardé en local."
-
-        content_b64 = base64.b64encode(content.encode("utf-8")).decode("utf-8")
-        headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
-        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{safe_path}"
-        with httpx.Client() as client:
-            get_resp = client.get(url, headers=headers)
-            payload = {"message": commit_message, "content": content_b64, "branch": "main"}
-            if get_resp.status_code == 200:
-                payload["sha"] = get_resp.json().get("sha")
-            res = client.put(url, json=payload, headers=headers)
-            if res.status_code in [200, 201]:
-                return f"SUCCÈS: {file_path} commité et poussé sur GitHub."
-            return f"Échec GitHub Commit ({res.status_code}): {res.text}"
-    except Exception as e:
-        return f"ERREUR GIT PUSH: {str(e)}"
-
-def git_delete_file(file_path: str) -> str:
     try:
-        safe_path = os.path.normpath(file_path).replace("\\", "/")
+        safe_path = os.path.normpath(target_path).replace("\\", "/")
         if os.path.exists(safe_path):
             try: os.remove(safe_path)
             except Exception: pass
 
         if not GITHUB_TOKEN or not GITHUB_REPO:
-            return f"Fichier {file_path} supprimé en local."
+            return f"Fichier {safe_path} supprimé en local."
 
         headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
         url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{safe_path}"
@@ -164,44 +105,25 @@ def git_delete_file(file_path: str) -> str:
                 payload = {"message": f"Chore: delete {safe_path}", "sha": sha, "branch": "main"}
                 del_resp = client.request("DELETE", url, json=payload, headers=headers)
                 if del_resp.status_code in [200, 202]:
-                    return f"SUCCÈS: {file_path} supprimé de GitHub."
+                    return f"SUCCÈS: {safe_path} supprimé de GitHub."
                 return f"Échec suppression GitHub ({del_resp.status_code})"
-            return f"Fichier {file_path} déjà absent de GitHub."
+            return f"Fichier {safe_path} déjà absent de GitHub."
     except Exception as e:
         return f"ERREUR SUPPRESSION GITHUB: {str(e)}"
 
-def delegate_to_subagent(team: str, task_description: str, search_query: str = "") -> str:
-    pole_key = "TECH_CODE" if "tech" in team.lower() else "LEGAL_TAL" if "legal" in team.lower() else "AMAL_DG"
-    live_data = tavily_web_search(search_query) if search_query else ""
-    prompt_msgs = [
-        SystemMessage(content=f"Tu es l'agent expert du pôle {team}. Sois rigoureux, technique et direct. Contexte web: {live_data}"),
-        HumanMessage(content=task_description)
-    ]
-    try:
-        loop = asyncio.get_running_loop()
-        future = asyncio.run_coroutine_threadsafe(execute_pole_llm(pole_key, prompt_msgs), loop)
-        return future.result(timeout=30.0)
-    except Exception as e:
-        return f"Erreur sous-agent {team}: {str(e)}"
-
 TOOLS_MAP = {
-    "tavily_web_search": tavily_web_search,
-    "read_github_file": read_github_file,
-    "git_commit_and_push": git_commit_and_push,
-    "git_delete_file": git_delete_file,
-    "delegate_to_subagent": delegate_to_subagent
+    "git_delete_file": git_delete_file
 }
 
-SYSTEM_PROMPT = """Tu es AMAL-DG, Directrice Générale et Orchestratrice Suprême du Swarm Agentique.
-Tu disposes d'une autonomie totale sur le dépôt GitHub et les outils d'exécution.
+SYSTEM_PROMPT = """Tu es AMAL-DG, Directrice Générale du Swarm Agentique.
+Tu disposes d'une autonomie totale sur le dépôt GitHub.
 
 PROTOCOLE D'EXÉCUTION :
-1. Avant d'exécuter une action de suppression ou modification, évalue si l'opération est valide.
-2. Si un outil renvoie une erreur, analyse-la, ajuste l'action et réessaie de manière autonome.
-3. Réponds EXCLUSIVEMENT sous la forme d'un objet JSON d'action valide :
-{"action": "nom_outil", "action_input": {"param1": "valeur1"}}
-OU si l'exécution est terminée :
-{"message": "Ton compte-rendu ici"}
+1. Pour supprimer un fichier, utilise l'outil `git_delete_file` en fournissant `"file_path"`.
+2. Réponds EXCLUSIVEMENT sous la forme d'un objet JSON d'action :
+{"action": "git_delete_file", "action_input": {"file_path": "chemin/du/fichier.md"}}
+OU si tu as terminé :
+{"message": "Nettoyage complété avec succès."}
 """
 
 class AgentState(TypedDict):
@@ -229,7 +151,7 @@ async def call_model_async(state: AgentState):
                 tool_result = tool_fn(**action_input) if isinstance(action_input, dict) else tool_fn(action_input)
                 logging.info(f"Outil {action_name} exécuté: {tool_result}")
                 
-                feedback_msg = HumanMessage(content=f"--- RÉSULTAT EXÉCUTION OUTIL [{action_name}] ---\n{tool_result}\n\nVérifie l'état final.")
+                feedback_msg = HumanMessage(content=f"--- RÉSULTAT EXÉCUTION OUTIL [{action_name}] ---\n{tool_result}\n\nPoursuis l'action suivante ou termine.")
                 return {"messages": [AIMessage(content=content), feedback_msg]}
         except Exception as parse_err:
             logging.warning(f"Erreur parsing JSON action: {parse_err}")
@@ -252,22 +174,29 @@ app_graph = workflow.compile()
 @app.get("/")
 @app.get("/health")
 def health_check():
-    return {"status": "ONLINE", "version": "11.3.0", "timestamp": str(datetime.utcnow())}
+    return {"status": "ONLINE", "version": "11.4.0", "timestamp": str(datetime.utcnow())}
 
+# ==========================================
+# GESTION HYBRIDE DES MESSAGES SLACK (WEBHOOK & TOKEN)
+# ==========================================
 def send_slack_message(channel: str, text: str):
-    if not SLACK_TOKEN: 
-        logging.error("SLACK_BOT_TOKEN manquant")
-        return
+    if not SLACK_TOKEN: return
     token = SLACK_TOKEN.strip()
-    url = "[https://slack.com/api/chat.postMessage](https://slack.com/api/chat.postMessage)"
+    
+    # Si la variable contient une URL Webhook complète
+    if token.startswith("http://") or token.startswith("https://"):
+        target_url = token
+        headers = {"Content-Type": "application/json; charset=utf-8"}
+        payload = {"text": text}
+    else:
+        target_url = "[https://slack.com/api/chat.postMessage](https://slack.com/api/chat.postMessage)"
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}
+        payload = {"channel": channel, "text": text}
+
     try:
         with httpx.Client(timeout=15.0) as client:
-            resp = client.post(
-                url,
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"},
-                json={"channel": channel, "text": text}
-            )
-            logging.info(f"Slack response status: {resp.status_code}")
+            resp = client.post(target_url, headers=headers, json=payload)
+            logging.info(f"Slack post status: {resp.status_code}")
     except Exception as e:
         logging.error(f"Erreur Slack dispatch: {e}")
 
