@@ -21,7 +21,7 @@ from supabase import create_client, Client
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM-ENTERPRISE", version="11.0.1")
+app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM-ENTERPRISE", version="11.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -31,9 +31,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ==========================================
-# CREDENTIALS & ENVIRONMENT
-# ==========================================
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -46,35 +43,32 @@ GITHUB_REPO = os.getenv("GITHUB_REPOSITORY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
 # ==========================================
-# CATALOGUE DE MODÈLES RÉSILIENTS
+# MODEL CATALOG (EXACT API SLUGS)
 # ==========================================
 MODEL_CATALOG = {
     "AMAL_DG": {
         "primary_provider": "groq",
-        "primary_model": "llama-3.1-8b-instant",
+        "primary_model": "llama3-8b-8192",
         "fallback_provider": "openrouter",
-        "fallback_model": "meta-llama/llama-3.1-8b-instruct:free",
+        "fallback_model": "meta-llama/llama-3.1-8b-instruct",
         "max_tokens": 4096
     },
     "TECH_CODE": {
         "primary_provider": "groq",
-        "primary_model": "llama-3.1-8b-instant",
+        "primary_model": "llama3-8b-8192",
         "fallback_provider": "openrouter",
-        "fallback_model": "qwen/qwen-2.5-coder-32b-instruct:free",
+        "fallback_model": "qwen/qwen-2.5-coder-32b-instruct",
         "max_tokens": 4096
     },
     "LEGAL_TAL": {
         "primary_provider": "groq",
-        "primary_model": "llama-3.1-8b-instant",
+        "primary_model": "llama3-8b-8192",
         "fallback_provider": "openrouter",
-        "fallback_model": "meta-llama/llama-3.1-8b-instruct:free",
+        "fallback_model": "meta-llama/llama-3.1-8b-instruct",
         "max_tokens": 4096
     }
 }
 
-# ==========================================
-# MOTEUR LLM MULTI-PROVIDER SÉCURISÉ
-# ==========================================
 async def invoke_llm(provider: str, model: str, messages: List[Any], max_tokens: int = 4096) -> str:
     if provider == "groq":
         if not GROQ_API_KEY: raise ValueError("GROQ_API_KEY manquante.")
@@ -101,7 +95,7 @@ async def execute_pole_llm(pole_key: str, messages: List[Any]) -> str:
         return f"⚠️ Erreur critique du pôle {pole_key}: Services LLM indisponibles."
 
 # ==========================================
-# OUTILS DE GESTION & PERMISSIONS
+# GITHUB & SEARCH TOOLS
 # ==========================================
 def tavily_web_search(query: str) -> str:
     if not TAVILY_API_KEY: return "Erreur: TAVILY_API_KEY non configurée."
@@ -199,13 +193,10 @@ TOOLS_MAP = {
     "delegate_to_subagent": delegate_to_subagent
 }
 
-# ==========================================
-# SYSTEM PROMPT STRUCTURÉ
-# ==========================================
 SYSTEM_PROMPT = """Tu es AMAL-DG, Directrice Générale et Orchestratrice Suprême du Swarm Agentique.
 Tu disposes d'une autonomie totale sur le dépôt GitHub et les outils d'exécution.
 
-PROTOCOLE D'EXÉCUTION ET ANTICIPATION DE BUGS :
+PROTOCOLE D'EXÉCUTION :
 1. Avant d'exécuter une action de suppression ou modification, évalue si l'opération est valide.
 2. Si un outil renvoie une erreur, analyse-la, ajuste l'action et réessaie de manière autonome.
 3. Réponds EXCLUSIVEMENT sous la forme d'un objet JSON d'action valide :
@@ -214,9 +205,6 @@ OU si l'exécution est terminée :
 {"message": "Ton compte-rendu ici"}
 """
 
-# ==========================================
-# LANGGRAPH ORCHESTRATION & SELF-CORRECTION
-# ==========================================
 class AgentState(TypedDict):
     messages: Annotated[List, operator.add]
 
@@ -262,23 +250,25 @@ workflow.add_conditional_edges("agent", should_continue, {"agent": "agent", END:
 
 app_graph = workflow.compile()
 
-# ==========================================
-# ROUTES API & WEBHOOKS SLACK
-# ==========================================
 @app.get("/")
 @app.get("/health")
 def health_check():
-    return {"status": "ONLINE", "version": "11.0.1", "timestamp": str(datetime.utcnow())}
+    return {"status": "ONLINE", "version": "11.1.0", "timestamp": str(datetime.utcnow())}
 
 def send_slack_message(channel: str, text: str):
-    if not SLACK_TOKEN: return
+    if not SLACK_TOKEN: 
+        logging.error("SLACK_BOT_TOKEN manquant")
+        return
+    token = SLACK_TOKEN.strip()
+    url = "[https://slack.com/api/chat.postMessage](https://slack.com/api/chat.postMessage)"
     try:
         with httpx.Client(timeout=15.0) as client:
-            client.post(
-                "[https://slack.com/api/chat.postMessage](https://slack.com/api/chat.postMessage)",
-                headers={"Authorization": f"Bearer {SLACK_TOKEN.strip()}", "Content-Type": "application/json; charset=utf-8"},
+            resp = client.post(
+                url,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"},
                 json={"channel": channel, "text": text}
             )
+            logging.info(f"Slack postMessage status: {resp.status_code}")
     except Exception as e:
         logging.error(f"Erreur Slack dispatch: {e}")
 
