@@ -63,13 +63,13 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and
 # CATALOGUE DE MODÈLES & DISPATCHING VALIDÉ
 # ==========================================
 MODEL_CATALOG = {
-    # Orchestrateur Principal / Direction Générale (120B OpenRouter -> Fallback Groq)
+    # Orchestrateur Principal / Direction Générale (DeepSeek V3 -> Fallback Llama 3.1 405B)
     "AMAL_DG": {
         "primary_provider": "openrouter",
-        "primary_model": "nvidia/nemotron-3-super",
-        "fallback_provider": "groq",
-        "fallback_model": "openai/gpt-oss-120b",
-        "max_tokens": 4096
+        "primary_model": "deepseek/deepseek-chat",
+        "fallback_provider": "openrouter",
+        "fallback_model": "meta-llama/llama-3.1-405b-instruct",
+        "max_tokens": 8192
     },
     # Pôle 01: Finance & Analytics
     "FIN": {
