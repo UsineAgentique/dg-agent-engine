@@ -1,7 +1,7 @@
 POLE_CONFIG = {
     "id": "GRO",
     "name": "ACQUISITION, SEO, CONTENT & GROWTH MARKETING",
-    "main_model": "thinkingmachines/inkling",
+    "primary_model": "thinkingmachines/inkling",
     "fallback_model": "llama-3.1-8b-instant",
     "subagents": [
         {"id": "GRO-01", "name": "Programmatic SEO Engine", "doctrine": "Domination absolue des SERP sur les requêtes clés."},
