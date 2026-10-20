@@ -1,27 +1,27 @@
-# Rapport de Situation Officiel - Usine Agentique
+# Rapport de Situation Officiel – Usine Agentique
 
 ## 1. Architecture Globale
-- **Backend**: FastAPI
-- **Orchestration**: LangGraph
-- **Base de données**: Supabase
-- **Hébergement**: Render
-- **Intégrations**: Slack API, GitHub API
+- **FastAPI** : Framework principal pour les API
+- **LangGraph** : Orchestration des workflows agentiques
+- **Supabase** : Base de données et authentification
+- **Render** : Hébergement et déploiement
+- **Slack API** : Communication et notifications
+- **GitHub API** : Gestion des dépôts et CI/CD
 
 ## 2. Configuration de l'Orchestrateur Principal AMAL-DG
-- **Modèle Principal**: DeepSeek-V3
-- **Modèle Secondaire**: Llama 3.1 405B
-- **Token Limit**: 8192
+- **Modèle Principal** : DeepSeek-V3
+- **Modèle Secondaire** : Llama 3.1 405B
+- **Token Limit** : 8192
 
-## 3. Cartographie des Pôles Modulaires
-
-| Pôle | Dossier | Modèle Principal | Modèle Fallback | Sous-Agents |
-|------|---------|------------------|-----------------|-------------|
-| FIN | poles/fin | GPT-4 | Claude-2 | 8 agents spécialisés |
-| TECH | poles/tech | GPT-4-Turbo | LLaMA-2 | 8 agents spécialisés |
-| GOV | poles/gov | Claude-3 | GPT-4 | 8 agents spécialisés |
-| GRO | poles/gro | GPT-4o | Mistral-Large | 8 agents spécialisés |
-| SAL | poles/sal | Claude-3-Sonnet | GPT-3.5 | 8 agents spécialisés |
-| SRC | poles/src | Gemini-1.5 | Claude-3-Opus | 8 agents spécialisés |
-| RAD | poles/rad | GPT-4-Turbo | Claude-3 | 8 agents spécialisés |
-| RET | poles/ret | Claude-3-Haiku | GPT-4 | 8 agents spécialisés |
-| MED | poles/med | GPT-4-Med | Claude-3 | 8 agents spécialisés |
+## 3. Cartographie des 9 Pôles Modulaires
+| Pôle | Dossier | Modèle Principal | Modèle Secondaire | Sous-Agents |
+|------|---------|------------------|-------------------|-------------|
+| **FIN** | `poles/FIN/config.py` | Llama 3.1 405B | DeepSeek-V3 | 8 sous-agents spécialisés |
+| **TECH** | `poles/TECH/config.py` | DeepSeek-V3 | Llama 3.1 405B | 8 sous-agents spécialisés |
+| **GOV** | `poles/GOV/config.py` | Llama 3.1 405B | DeepSeek-V3 | 8 sous-agents spécialisés |
+| **GRO** | `poles/GRO/config.py` | DeepSeek-V3 | Llama 3.1 405B | 8 sous-agents spécialisés |
+| **SAL** | `poles/SAL/config.py` | Llama 3.1 405B | DeepSeek-V3 | 8 sous-agents spécialisés |
+| **SRC** | `poles/SRC/config.py` | DeepSeek-V3 | Llama 3.1 405B | 8 sous-agents spécialisés |
+| **RAD** | `poles/RAD/config.py` | Llama 3.1 405B | DeepSeek-V3 | 8 sous-agents spécialisés |
+| **RET** | `poles/RET/config.py` | DeepSeek-V3 | Llama 3.1 405B | 8 sous-agents spécialisés |
+| **MED** | `poles/MED/config.py` | Llama 3.1 405B | DeepSeek-V3 | 8 sous-agents spécialisés |
