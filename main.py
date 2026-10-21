@@ -57,14 +57,14 @@ E2B_API_KEY = os.getenv("E2B_API_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
 # ==========================================
-# CATALOGUE DE MODÈLES STABILISÉ (DEEPSEEK / GROQ)
+# CATALOGUE DE MODÈLES STABILISÉ
 # ==========================================
 MODEL_CATALOG = {
     "AMAL_DG": {
         "primary_provider": "openrouter",
-        "primary_model": "deepseek/deepseek-chat",
+        "primary_model": "nvidia/nemotron-3-ultra-550b-a55b:free",
         "fallback_provider": "openrouter",
-        "fallback_model": "deepseek/deepseek-r1",
+        "fallback_model": "google/gemma-4-31b-it:free",
         "max_tokens": 8192
     },
     "FIN": {
