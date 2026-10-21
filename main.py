@@ -18,7 +18,6 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_openai import ChatOpenAI
 from langchain_groq import ChatGroq
-from langchain_google_genai import ChatGoogleGenerativeAI
 from supabase import create_client, Client
 from fpdf import FPDF
 
@@ -30,7 +29,7 @@ except ImportError:
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="15.0.0")
+app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="15.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -41,13 +40,10 @@ app.add_middleware(
 )
 
 # ==========================================
-# VARIABLES D'ENVIRONNEMENT & CONFIGURATION MULTI-FOURNISSEURS
+# VARIABLES D'ENVIRONNEMENT & CONFIGURATION
 # ==========================================
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
-
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 SLACK_TOKEN = os.getenv("SLACK_BOT_TOKEN")
@@ -60,45 +56,45 @@ E2B_API_KEY = os.getenv("E2B_API_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
 # ==========================================
-# CATALOGUE DE MODÈLES & DISPATCHING VALIDÉ
+# CATALOGUE DE MODÈLES OPTIMISÉ (CLAUDE, GROK, GLM, DEEPSEEK, QWEN)
 # ==========================================
 MODEL_CATALOG = {
-    # Orchestrateur Principal / Direction Générale (DeepSeek V3 -> Fallback Llama 3.1 405B)
+    # Orchestrateur Principal / Direction Générale
     "AMAL_DG": {
         "primary_provider": "openrouter",
         "primary_model": "deepseek/deepseek-chat",
         "fallback_provider": "openrouter",
-        "fallback_model": "meta-llama/llama-3.1-405b-instruct",
+        "fallback_model": "anthropic/claude-3.5-sonnet",
         "max_tokens": 8192
     },
     # Pôle 01: Finance & Analytics
     "FIN": {
         "primary_provider": "openrouter",
-        "primary_model": "liquid/lfm2.5-2.6b",
+        "primary_model": "anthropic/claude-3.5-sonnet",
         "fallback_provider": "groq",
-        "fallback_model": "openai/gpt-oss-20b",
+        "fallback_model": "llama-3.3-70b-versatile",
         "max_tokens": 4096
     },
     # Pôle 02: Tech & QA (Code & Sandbox E2B)
     "TECH": {
         "primary_provider": "openrouter",
-        "primary_model": "cohere/north-mini-code",
-        "fallback_provider": "groq",
-        "fallback_model": "llama-3.3-70b-versatile",
+        "primary_model": "qwen/qwen-2.5-coder-32b-instruct",
+        "fallback_provider": "openrouter",
+        "fallback_model": "deepseek/deepseek-r1",
         "max_tokens": 4096
     },
-    # Pôle 03: Juridique TAL & Conformité Québec (Raisonnement Élevé / Documents Longs)
+    # Pôle 03: Juridique TAL & Conformité Québec (Raisonnement Complexe)
     "GOV": {
-        "primary_provider": "gemini",
-        "primary_model": "gemini-3.8-live-extended-thinking",
+        "primary_provider": "openrouter",
+        "primary_model": "thudm/glm-4-9b-chat",
         "fallback_provider": "openrouter",
-        "fallback_model": "dots-studio/dots3-note-preview",
+        "fallback_model": "anthropic/claude-3.5-sonnet",
         "max_tokens": 8192
     },
     # Pôle 04: Growth & SEO
     "GRO": {
         "primary_provider": "openrouter",
-        "primary_model": "thinkingmachines/inkling",
+        "primary_model": "x-ai/grok-2-1212",
         "fallback_provider": "groq",
         "fallback_model": "llama-3.1-8b-instant",
         "max_tokens": 4096
@@ -106,31 +102,31 @@ MODEL_CATALOG = {
     # Pôle 05: Ventes & Prospection
     "SAL": {
         "primary_provider": "openrouter",
-        "primary_model": "minimax/minimax-m3.1-flash",
-        "fallback_provider": "gemini",
-        "fallback_model": "gemini-3.8-flash",
+        "primary_model": "anthropic/claude-3.5-haiku",
+        "fallback_provider": "openrouter",
+        "fallback_model": "x-ai/grok-2-1212",
         "max_tokens": 4096
     },
     # Pôle 06: Sourcing & Data Mining
     "SRC": {
         "primary_provider": "openrouter",
-        "primary_model": "google/gemma-4-31b",
+        "primary_model": "thudm/glm-4-9b-chat",
         "fallback_provider": "groq",
-        "fallback_model": "openai/gpt-oss-20b",
+        "fallback_model": "llama-3.3-70b-versatile",
         "max_tokens": 4096
     },
     # Pôle 07: R&D & Veille
     "RAD": {
         "primary_provider": "openrouter",
-        "primary_model": "nvidia/nemotron-3.5-lightning",
-        "fallback_provider": "gemini",
-        "fallback_model": "gemini-3.6-flash",
+        "primary_model": "x-ai/grok-2-1212",
+        "fallback_provider": "openrouter",
+        "fallback_model": "deepseek/deepseek-chat",
         "max_tokens": 4096
     },
     # Pôle 08: Rétention & Prise de Décision
     "RET": {
         "primary_provider": "openrouter",
-        "primary_model": "inception/mercury-decide",
+        "primary_model": "anthropic/claude-3.5-sonnet",
         "fallback_provider": "groq",
         "fallback_model": "llama-3.3-70b-versatile",
         "max_tokens": 4096
@@ -138,9 +134,9 @@ MODEL_CATALOG = {
     # Pôle 09: Médias & Multimodal
     "MED": {
         "primary_provider": "openrouter",
-        "primary_model": "google/gemma-4-26b-a4b",
-        "fallback_provider": "gemini",
-        "fallback_model": "gemini-3.1-flash-lite",
+        "primary_model": "anthropic/claude-3.5-haiku",
+        "fallback_provider": "groq",
+        "fallback_model": "llama-3.1-8b-instant",
         "max_tokens": 4096
     }
 }
@@ -204,7 +200,8 @@ def generate_pdf_report(title: str, content: str, filename: str = "rapport_amal.
 def execute_python_code_e2b(code: str, **kwargs) -> str:
     try:
         if E2B_API_KEY and Sandbox:
-            with Sandbox(api_key=E2B_API_KEY) as sandbox:
+            # CORRECTION CRITIQUE : Suppression de l'argument api_key non supporté par Sandbox.__init__()
+            with Sandbox() as sandbox:
                 execution = sandbox.run_code(code)
                 return f"Résultats Sandbox E2B:\nLogs: {execution.logs}\nErreurs: {execution.error}"
         else:
@@ -337,13 +334,10 @@ TOOLS_MAP = {
 # ROUTEUR MULTI-FOURNISSEURS LLM (DISPATCHER)
 # ==========================================
 async def invoke_llm(provider: str, model: str, messages: List[Any], max_tokens: int = 4096) -> str:
-    """Route l'appel au bon SDK selon le provider configuré sur Render"""
+    """Route l'appel au bon SDK selon le provider configuré"""
     if provider == "groq":
         if not GROQ_API_KEY: raise ValueError("GROQ_API_KEY non disponible sur Render.")
         client = ChatGroq(model_name=model, groq_api_key=GROQ_API_KEY, temperature=0.1, max_tokens=max_tokens)
-    elif provider == "gemini":
-        if not GEMINI_API_KEY: raise ValueError("GEMINI_API_KEY non disponible sur Render.")
-        client = ChatGoogleGenerativeAI(model=model, google_api_key=GEMINI_API_KEY, temperature=0.1, max_output_tokens=max_tokens)
     elif provider == "openrouter":
         if not OPENROUTER_API_KEY: raise ValueError("OPENROUTER_API_KEY non disponible sur Render.")
         client = ChatOpenAI(
@@ -359,7 +353,7 @@ async def invoke_llm(provider: str, model: str, messages: List[Any], max_tokens:
     return res.content
 
 async def execute_pole_llm(pole_key: str, messages: List[Any]) -> str:
-    """Exécute la requête avec bascule automatique Primary -> Fallback"""
+    """Exécute la requête avec bascule automatique Primary -> Fallback sans interruption"""
     cfg = MODEL_CATALOG.get(pole_key, MODEL_CATALOG["AMAL_DG"])
     
     # Tentative 1: Provider Principal
@@ -436,11 +430,10 @@ app_graph = workflow.compile(checkpointer=checkpointer)
 def health_check():
     return {
         "status": "ONLINE",
-        "version": "15.0.0",
+        "version": "15.1.0",
         "providers_active": {
             "openrouter": bool(OPENROUTER_API_KEY),
             "groq": bool(GROQ_API_KEY),
-            "gemini": bool(GEMINI_API_KEY),
             "github": bool(GITHUB_TOKEN)
         },
         "timestamp": str(datetime.utcnow())
