@@ -1,3 +1,7 @@
+from fastapi import FastAPI
+
+app = FastAPI(title="AMAL-DG-EXECUTIVE-SWARM", version="15.2.0")
+
 def execute_python_code_e2b(code: str, **kwargs) -> str:
     try:
         if E2B_API_KEY and Sandbox:
